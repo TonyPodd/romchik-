@@ -32,3 +32,4 @@ export async function clearTableROI() {
 export async function autoDetectTable() {
   const r = await fetch('http://127.0.0.1:8000/table/autodetect', { method: 'POST' }); return r.json();
 }
+

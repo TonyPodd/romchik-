@@ -83,7 +83,7 @@ async def _mjpeg_generator():
                 b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
                 jpeg + b"\r\n"
             )
-        await asyncio.sleep(1/30)
+        await asyncio.sleep(1/60)
 
 @app.get("/video/mjpeg")
 async def video_mjpeg():
