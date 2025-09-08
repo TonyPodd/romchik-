@@ -1,0 +1,2 @@
+def diarize(segments):
+    return []

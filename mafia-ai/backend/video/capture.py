@@ -1,0 +1,2 @@
+def frames():
+    yield None
