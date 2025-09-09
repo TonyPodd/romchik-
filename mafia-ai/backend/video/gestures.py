@@ -35,7 +35,7 @@ class GestureDetector:
         table_y_ratio: float = 0.80,              # нижняя часть кадра считается столом (80% высоты и ниже)
         min_detection_confidence: float = 0.6,
         min_tracking_confidence: float = 0.5,
-        max_num_hands: int = 2,
+        max_num_hands: int = 10,
     ):
         self.table_y_ratio = table_y_ratio
         self.mp_hands = mp.solutions.hands

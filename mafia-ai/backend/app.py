@@ -1,19 +1,29 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
 import asyncio, time, os
-from fastapi import Body
+import cv2
 
 from video.stream_worker import GestureStream
+from storage import players as P
 
 app = FastAPI(title="Mafia AI Backend")
+
+# статика для миниатюр игроков (storage/thumbs/*.jpg)
+app.mount("/static", StaticFiles(directory="storage"), name="static")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_credentials=True
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
 )
 
 clients = set()
 _stream: GestureStream | None = None
+
 
 async def ws_broadcast(msg: dict):
     dead = []
@@ -25,37 +35,45 @@ async def ws_broadcast(msg: dict):
     for d in dead:
         clients.discard(d)
 
+
 @app.get("/health")
 def health():
     return {
         "ok": True,
         "clients": len(clients),
-        "video_running": _stream is not None
+        "video_running": _stream is not None,
     }
+
 
 @app.get("/video/status")
 def video_status():
     return {"running": _stream is not None}
 
+
 @app.post("/video/start")
-async def video_start(camera_index: int = None, fps: int = None, table_y_ratio: float = None):
+async def video_start(
+    camera_index: int | None = None,
+    fps: int | None = None,
+    table_y_ratio: float | None = None,
+):
     global _stream
     if _stream:
         return {"ok": True, "status": "already_running"}
 
     cam = int(os.getenv("CAMERA_INDEX", "0")) if camera_index is None else int(camera_index)
-    f = int(os.getenv("GESTURE_FPS", "15")) if fps is None else int(fps)
+    f = int(os.getenv("GESTURE_FPS", "30")) if fps is None else int(fps)
     tyr = float(os.getenv("TABLE_Y_RATIO", "0.80")) if table_y_ratio is None else float(table_y_ratio)
 
     _stream = GestureStream(on_event=ws_broadcast, camera_index=cam, fps=f, table_y_ratio=tyr)
     try:
         await _stream.start()
-        print(f"[app] gesture stream started (camera={cam})")
+        print(f"[app] gesture stream started (camera={cam}, fps={f})")
         return {"ok": True, "camera_index": cam, "fps": f, "table_y_ratio": tyr}
     except Exception as e:
         _stream = None
         print(f"[app] gesture stream failed: {e}")
         return {"ok": False, "error": str(e)}
+
 
 @app.post("/video/stop")
 async def video_stop():
@@ -67,10 +85,12 @@ async def video_stop():
     print("[app] gesture stream stopped")
     return {"ok": True, "status": "stopped"}
 
+
 BOUNDARY = "frame"
 
+
 async def _mjpeg_generator():
-    # отдаём ~15 FPS, либо последний доступный кадр
+    # отдаём до ~60 FPS — если новых кадров нет, повторяется последний
     while True:
         if _stream is None:
             await asyncio.sleep(0.2)
@@ -83,7 +103,8 @@ async def _mjpeg_generator():
                 b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
                 jpeg + b"\r\n"
             )
-        await asyncio.sleep(1/60)
+        await asyncio.sleep(1 / 60)
+
 
 @app.get("/video/mjpeg")
 async def video_mjpeg():
@@ -92,9 +113,12 @@ async def video_mjpeg():
         "Pragma": "no-cache",
         "Expires": "0",
     }
-    return StreamingResponse(_mjpeg_generator(),
-                             media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY}",
-                             headers=headers)
+    return StreamingResponse(
+        _mjpeg_generator(),
+        media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY}",
+        headers=headers,
+    )
+
 
 @app.on_event("startup")
 async def _startup():
@@ -102,12 +126,14 @@ async def _startup():
     if auto:
         await video_start()
 
+
 @app.on_event("shutdown")
 async def _shutdown():
     global _stream
     if _stream:
         await _stream.stop()
         _stream = None
+
 
 @app.websocket("/ws")
 async def ws(ws: WebSocket):
@@ -128,6 +154,7 @@ async def ws(ws: WebSocket):
         clients.discard(ws)
         print(f"[ws] client disconnected, total={len(clients)}")
 
+
 async def run_timer(seat: int, ms: int):
     end = time.monotonic() + ms / 1000
     while True:
@@ -138,6 +165,9 @@ async def run_timer(seat: int, ms: int):
         await asyncio.sleep(0.1)
     await ws_broadcast({"type": "timer.end", "seat": seat})
 
+
+# --------- Стол / ROI ---------
+
 @app.get("/table/status")
 def table_status():
     # отдаём сохранённый нормализованный полигон (или null)
@@ -146,6 +176,7 @@ def table_status():
     if _stream and _stream._table_poly_norm:
         poly = _stream._table_poly_norm
     return {"poly_norm": poly}
+
 
 @app.post("/table/set_roi")
 async def table_set_roi(data: dict = Body(...)):
@@ -170,6 +201,7 @@ async def table_clear():
     _stream.clear_table_polygon()
     return {"ok": True}
 
+
 @app.post("/table/autodetect")
 async def table_autodetect():
     global _stream
@@ -179,3 +211,85 @@ async def table_autodetect():
     if poly is None:
         return {"ok": False, "error": "no rectangle found"}
     return {"ok": True, "poly_norm": poly}
+
+
+# --------- Игроки / авторизация лиц ---------
+
+@app.get("/players/list")
+def players_list():
+    return {"players": P.list_players()}
+
+
+@app.post("/players/reset")
+def players_reset():
+    P.reset_players()
+    return {"ok": True}
+
+
+@app.post("/players/name")
+def players_name(data: dict = Body(...)):
+    pid = int(data.get("id"))
+    name = str(data.get("name", ""))
+    ok = P.set_name(pid, name)
+    return {"ok": ok}
+
+
+@app.post("/players/delete")
+def players_delete(data: dict = Body(...)):
+    pid = int(data.get("id"))
+    ok = P.delete_player(pid)
+    return {"ok": ok}
+
+
+@app.post("/players/enroll")
+async def players_enroll(data: dict = Body(None)):
+    global _stream
+    if not _stream:
+        return {"ok": False, "error": "video not running"}
+
+    name = (data or {}).get("name", "")
+    frame = _stream._last_frame
+    if frame is None:
+        return {"ok": False, "error": "no frame"}
+
+    # безопасный анализ с фолбэком
+    def _safe():
+        try:
+            return _stream._face.analyze(frame)
+        except Exception:
+            # переключиться на landmarks и попробовать снова
+            if hasattr(_stream, "_fallback_face_backend"):
+                _stream._fallback_face_backend()
+            try:
+                return _stream._face.analyze(frame)
+            except Exception:
+                return []
+
+    faces = await asyncio.to_thread(_safe)
+    if not faces:
+        return {"ok": False, "error": "no face"}
+
+    def area(bb): x1,y1,x2,y2 = bb; return max(0,(x2-x1)) * max(0,(y2-y1))
+    largest = max(faces, key=lambda f: area(f["bbox"]))
+    x1,y1,x2,y2 = largest["bbox"]
+    emb = largest["embedding"].astype(float).tolist()
+
+    crop = frame[max(0,y1):max(0,y2), max(0,x1):max(0,x2)]
+    pid = P.next_id()
+    thumb_rel = f"thumbs/{pid}.jpg"
+    (P.THUMBS_DIR).mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(P.THUMBS_DIR / f"{pid}.jpg"), crop)
+
+    player = P.add_player(emb, thumb_rel, name=name)
+    return {"ok": True, "player": player}
+
+
+# @app.get("/video/snapshot.jpg")
+# async def snapshot():
+#     global _stream
+#     if not _stream or _stream._last_frame is None:
+#         return Response(status_code=404)
+#     ok, buf = cv2.imencode(".jpg", _stream._last_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+#     if not ok:
+#         return Response(status_code=500)
+#     return Response(content=buf.tobytes(), media_type="image/jpeg")
