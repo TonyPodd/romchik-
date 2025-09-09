@@ -7,6 +7,7 @@ from pyannote.audio import Inference
 import torch
 import tempfile
 import wave
+import os
 
 # -----------------------------
 # Настройка
@@ -17,7 +18,7 @@ SEGMENT_DURATION = 3  # секунд для обработки сегмента
 recognizer = sr.Recognizer()
 device = torch.device("cpu")  
 
-TOKEN = "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"
+TOKEN = os.getenv("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")
 
 audio_queue = queue.Queue()
 speaker_embeddings = {}
