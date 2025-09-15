@@ -1,0 +1,1 @@
+python -m tests.people_gestures_run --detector yolo --yolo "C:\Users\a_nto\Code\romchik\mafia-ai\backend\models\hand_yolov8n.pt" --no-hagrid"
