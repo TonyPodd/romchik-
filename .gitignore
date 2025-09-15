@@ -1,2 +1,20 @@
+# python/venv
+.venv/
+__pycache__/
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# медиаданные/кеш
+storage/
+*.mp4
+*.avi
+*.mov
+
+# модели
 backend/models/
 mafia-ai/backend/models/
+!backend/models/.gitkeep
+!mafia-ai/backend/models/.gitkeep
