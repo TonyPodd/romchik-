@@ -543,3 +543,56 @@ p.lead{ font-size: clamp(15px, 1.4vw, 18px); color: var(--fg); opacity:.95 }
   border:1px solid rgba(255,255,255,.18);
   font-weight:700;
 }
+
+.glass-input{
+  appearance:none; border:none; outline:none;
+  border-radius:14px; padding:12px 14px; min-width: 220px;
+  color: var(--fg); background: rgba(255,255,255,.08);
+  border:1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+}
+
+.enroll-ring{ position:relative; display:grid; place-items:center }
+.enroll-svg{ display:block }
+.enroll-core{
+  position:absolute; inset:0; display:grid; place-items:center;
+  font-weight:900; font-size:28px; color:#fff;
+  text-shadow: 0 0 18px rgba(115,194,255,.45);
+}
+.enroll-core.done{ color:#6cffba }
+.enroll-core.error{ color:#ff6c8a }
+
+.roster-grid{
+  display:grid; grid-template-columns: 1.1fr 1fr; gap:20px;
+}
+@media (max-width: 980px){ .roster-grid{ grid-template-columns: 1fr; } }
+
+.stream-wrap{
+  position:relative; border-radius:16px; overflow:hidden;
+  border:1px solid var(--border); background: rgba(255,255,255,.04);
+  aspect-ratio: 16/9;      /* видео не обрезается, сохраняем пропорции */
+}
+.stream-wrap .video-stream{ width:100%; height:100%; object-fit: cover; display:block; }
+.stream-overlay{
+  position:absolute; inset:0; display:grid; place-items:center; pointer-events:none;
+}
+
+.roster-actions{ margin-top:12px; display:flex; gap:8px; }
+
+.players-grid{
+  display:grid; gap:12px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+.player-card{
+  border:1px solid var(--border); background: var(--glass); border-radius:14px; padding:8px;
+  display:flex; flex-direction:column; gap:8px;
+}
+.player-card img{ width:100%; aspect-ratio: 1/1; object-fit:cover; border-radius:10px; }
+.pc-row{ display:flex; align-items:center; justify-content:space-between; }
+.pc-name{ font-weight:800; font-size:14px; }
+.pc-del{
+  appearance:none; border:none; cursor:pointer; width:28px; height:28px;
+  border-radius:8px; background: rgba(255,255,255,.08); color: var(--fg);
+  border:1px solid var(--border); font-size:18px; line-height:28px;
+}
+.pc-del:hover{ transform: translateY(-1px) }

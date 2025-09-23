@@ -1,6 +1,7 @@
 // src/pages/StepTable.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { GlassButton } from "@/components/GlassButton";
+
 import {
   startVideo,
   getTableStatus,
@@ -10,6 +11,8 @@ import {
   beginTableCalibration,
   endTableCalibration,
 } from "@/api";
+
+
 
 type Pt = { x: number; y: number }; // нормализованные [0..1]
 

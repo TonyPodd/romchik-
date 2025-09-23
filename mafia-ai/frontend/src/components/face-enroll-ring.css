@@ -1,0 +1,6 @@
+.ring-wrap{ display:grid; place-items:center; gap:12px; }
+.ring-svg{ width:min(52vmin, 380px); height:auto; }
+.ring-seg{ fill: rgba(255,255,255,.08); transition: fill .18s ease; }
+.ring-seg.on{ fill: url(#rg); filter: drop-shadow(0 0 6px rgba(115,194,255,.55)); }
+.ring-core{ fill: rgba(255,255,255,.04); stroke: rgba(255,255,255,.18); stroke-width: 1; }
+.ring-hint{ text-align:center; color: var(--muted); font-weight:700; letter-spacing:.2px; }
