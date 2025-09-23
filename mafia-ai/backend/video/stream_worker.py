@@ -15,6 +15,10 @@ from storage import players as P
 
 EventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
+# ---------- Render modes ----------
+RENDER_RAW   = 0  # чистое видео
+RENDER_TABLE = 1  # только линия/полигон стола
+RENDER_FULL  = 2  # лица + руки + стол
 
 # ---------------- Camera helpers ----------------
 
@@ -24,11 +28,6 @@ def _try_open(index: int, api: Optional[int]) -> Optional[cv2.VideoCapture]:
 
 
 def _open_capture(idx: int) -> cv2.VideoCapture:
-    """
-    Windows: пробуем MSMF → DSHOW → ANY (или порядок из env OPENCV_BACKEND=MSMF|DSHOW|ANY|AUTO)
-    Non-Windows: CAP_ANY
-    По флагу FORCE_MJPEG=1 форсим MJPG fourcc.
-    """
     if sys.platform.startswith("win"):
         order_env = (os.getenv("OPENCV_BACKEND") or "AUTO").upper()
         auto = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
@@ -66,7 +65,6 @@ def _point_in_poly(px: Tuple[int, int], poly: np.ndarray) -> bool:
 
 class _FaceBackendBase:
     sim_threshold: float = 0.38
-
     def analyze(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
@@ -100,14 +98,14 @@ class _FaceBackendONNX(_FaceBackendBase):
     def _preprocess(face_bgr: np.ndarray) -> np.ndarray:
         img = cv2.resize(face_bgr, (112, 112), interpolation=cv2.INTER_LINEAR)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32)
-        img = (img / 127.5) - 1.0  # [-1,1]
-        img = np.transpose(img, (2, 0, 1))  # C,H,W
-        img = np.expand_dims(img, 0).astype(np.float32)  # 1,C,H,W
+        img = (img / 127.5) - 1.0
+        img = np.transpose(img, (2, 0, 1))
+        img = np.expand_dims(img, 0).astype(np.float32)
         return img
 
     def _embed(self, face_bgr: np.ndarray) -> np.ndarray:
         inp = self._preprocess(face_bgr)
-        out = self.sess.run([self.output_name], {self.input_name: inp})[0]  # (1,512)
+        out = self.sess.run([self.output_name], {self.input_name: inp})[0]
         emb = out[0].astype(np.float32)
         return emb / (np.linalg.norm(emb) + 1e-6)
 
@@ -129,19 +127,12 @@ class _FaceBackendONNX(_FaceBackendBase):
             if crop.size == 0:
                 continue
             emb = self._embed(crop)
-            out.append({
-                "bbox": (xx1, yy1, xx2, yy2),
-                "score": float(det.score[0] if det.score else 0.0),
-                "embedding": emb
-            })
+            out.append({"bbox": (xx1, yy1, xx2, yy2), "score": float(det.score[0] if det.score else 0.0), "embedding": emb})
         return out
 
 
 class _FaceBackendLandmarks(_FaceBackendBase):
-    """
-    Фолбэк: MediaPipe FaceMesh → эмбеддинг как нормализованные 2D-координаты.
-    Стабильно и без ONNX, достаточно для 10–12 игроков.
-    """
+    """Фолбэк: MediaPipe FaceMesh → эмбеддинг как нормализованные 2D-координаты."""
     def __init__(self, sim_threshold: float = 0.85):
         import mediapipe as mp
         self.mesh = mp.solutions.face_mesh.FaceMesh(
@@ -165,8 +156,7 @@ class _FaceBackendLandmarks(_FaceBackendBase):
             bw = maxx - minx + 1e-6; bh = maxy - miny + 1e-6
             vec = []
             for lm in lmset.landmark:
-                vec.append((lm.x - minx) / bw)
-                vec.append((lm.y - miny) / bh)
+                vec.append((lm.x - minx) / bw); vec.append((lm.y - miny) / bh)
             emb = np.array(vec, dtype=np.float32)
             emb = emb - emb.mean()
             emb = emb / (np.linalg.norm(emb) + 1e-6)
@@ -179,7 +169,6 @@ def _make_face_backend_initial() -> _FaceBackendBase:
     if use == "LANDMARKS":
         print("[face] using LANDMARKS backend")
         return _FaceBackendLandmarks(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.85")))
-    # AUTO / ONNX
     print("[face] using ONNX backend (auto-fallback enabled)")
     try:
         return _FaceBackendONNX(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.38")))
@@ -206,21 +195,48 @@ class GestureStream:
         self.fps = max(5, fps)
         self.width = width
         self.height = height
+        self._calibration_only: bool = False  # в этом режиме скрываем лица/жесты и не считаем их
 
         self._det = GestureDetector(table_y_ratio=table_y_ratio)
         self._face: _FaceBackendBase = _make_face_backend_initial()
-        self._face_failed = False  # уже переключались на фолбэк?
+        self._face_failed = False
 
         self._cap: Optional[cv2.VideoCapture] = None
         self._task: Optional[asyncio.Task] = None
         self._running: bool = False
 
+        # Режимы
+        self.detect_enabled: bool = True
+        self.render_mode: int = RENDER_FULL
+
+        # Буферы
+        self._last_raw_jpeg: Optional[bytes] = None
         self._last_jpeg: Optional[bytes] = None
         self._jpeg_lock = asyncio.Lock()
         self._last_frame: Optional[np.ndarray] = None
         self._frame_lock = asyncio.Lock()
 
         self._table_poly_norm: Optional[List[Tuple[float, float]]] = None
+
+    # --- Control API ---
+
+    def set_detect_enabled(self, flag: bool):
+        self.detect_enabled = bool(flag)
+
+    def set_render_mode(self, mode: int):
+        self.render_mode = int(mode)
+
+    def begin_table_calibration(self):
+        """Вызывайте при входе в шаг калибровки стола."""
+        self.set_detect_enabled(False)
+        self.set_render_mode(RENDER_TABLE)
+
+    def end_table_calibration(self):
+        """Вызывайте при завершении калибровки."""
+        self.set_render_mode(RENDER_FULL)
+        self.set_detect_enabled(True)
+
+    # --- Lifecycle ---
 
     async def start(self):
         if self._running:
@@ -230,8 +246,7 @@ class GestureStream:
         self._running = True
         print(f"[GestureStream] started (camera={self.camera_index}, fps={self.fps})")
 
-        # Прогрев — подготовим первый JPEG
-        warm_ok = False
+        # warmup JPEG
         for _ in range(30):
             ok, frame = await asyncio.to_thread(self._cap.read)
             if not ok or frame is None:
@@ -244,11 +259,9 @@ class GestureStream:
                 if ok2:
                     async with self._jpeg_lock:
                         self._last_jpeg = buf.tobytes()
-                warm_ok = True
+                        self._last_raw_jpeg = self._last_jpeg
                 break
             await asyncio.sleep(0.01)
-        if not warm_ok:
-            print("[camera] warmup got black frames; try OPENCV_BACKEND=MSMF/DSHOW or FORCE_MJPEG=1")
 
         self._task = asyncio.create_task(self._run())
 
@@ -269,6 +282,8 @@ class GestureStream:
             self._cap = None
         print("[GestureStream] stopped")
 
+    # --- Table polygon helpers ---
+
     def _poly_px(self, w: int, h: int) -> Optional[np.ndarray]:
         if not self._table_poly_norm:
             return None
@@ -283,35 +298,111 @@ class GestureStream:
     def clear_table_polygon(self):
         self._table_poly_norm = None
 
+    # --- Improved autodetect ---
+
+    @staticmethod
+    def _poly_clockwise(pts: np.ndarray) -> np.ndarray:
+        c = pts.mean(axis=0)
+        ang = np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0])
+        order = np.argsort(ang)
+        return pts[order]
+
     async def auto_detect_table(self) -> Optional[List[Tuple[float, float]]]:
         async with self._frame_lock:
             frame = None if self._last_frame is None else self._last_frame.copy()
         if frame is None:
             return None
+
         h, w = frame.shape[:2]
-        roi = frame[int(h * 0.40):, :]
-        roi_y0 = int(h * 0.40)
+        roi = frame[int(h * 0.35):, :]
+        y0 = int(h * 0.35)
+
+        cand_polys: List[np.ndarray] = []
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(gray, 40, 120)
-        edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+        g = cv2.bilateralFilter(gray, 9, 75, 75)
+        edges = cv2.Canny(g, 50, 130)
+        edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), 1)
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cnts:
+        if cnts:
+            best = max(cnts, key=cv2.contourArea).reshape(-1, 2).astype(np.int32)
+            best[:, 1] += y0
+            hull = cv2.convexHull(best).reshape(-1, 2)
+            peri = cv2.arcLength(hull, True)
+            approx = cv2.approxPolyDP(hull, 0.015 * peri, True).reshape(-1, 2)
+            if approx.shape[0] >= 4:
+                cand_polys.append(approx)
+
+        edges2 = cv2.Canny(g, 80, 160)
+        lines = cv2.HoughLinesP(edges2, 1, np.pi / 180, threshold=120,
+                                minLineLength=int(min(w, h) * 0.25), maxLineGap=14)
+        if lines is not None:
+            mask = np.zeros_like(edges2)
+            for l in lines[:200]:
+                x1, y1, x2, y2 = l[0]
+                cv2.line(mask, (x1, y1), (x2, y2), 255, 2)
+            mask = cv2.dilate(mask, np.ones((5, 5), np.uint8), 1)
+            cnts2, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if cnts2:
+                big = max(cnts2, key=cv2.contourArea).reshape(-1, 2).astype(np.int32)
+                big[:, 1] += y0
+                hull2 = cv2.convexHull(big).reshape(-1, 2)
+                peri2 = cv2.arcLength(hull2, True)
+                approx2 = cv2.approxPolyDP(hull2, 0.02 * peri2, True).reshape(-1, 2)
+                if approx2.shape[0] >= 4:
+                    cand_polys.append(approx2)
+
+        try:
+            lab = cv2.cvtColor(roi, cv2.COLOR_BGR2Lab)
+            X = lab.reshape(-1, 3).astype(np.float32)
+            K = 3
+            _, labels, _ = cv2.kmeans(
+                X, K, None,
+                (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0),
+                2, cv2.KMEANS_PP_CENTERS
+            )
+            labels = labels.reshape(lab.shape[:2])
+            half = labels[labels.shape[0] // 2:, :]
+            vals, counts = np.unique(half, return_counts=True)
+            kdom = int(vals[np.argmax(counts)])
+            m = (labels == kdom).astype(np.uint8) * 255
+            m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8), iterations=1)
+            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8), iterations=1)
+            cnts3, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if cnts3:
+                big3 = max(cnts3, key=cv2.contourArea).reshape(-1, 2).astype(np.int32)
+                big3[:, 1] += y0
+                hull3 = cv2.convexHull(big3).reshape(-1, 2)
+                peri3 = cv2.arcLength(hull3, True)
+                approx3 = cv2.approxPolyDP(hull3, 0.02 * peri3, True).reshape(-1, 2)
+                if approx3.shape[0] >= 4:
+                    cand_polys.append(approx3)
+        except Exception:
+            pass
+
+        def score(poly: np.ndarray) -> float:
+            area = float(cv2.contourArea(poly))
+            if area < 0.02 * w * h:
+                return 0.0
+            rect = cv2.minAreaRect(poly.astype(np.float32))
+            box = cv2.boxPoints(rect)
+            rect_area = cv2.contourArea(box.astype(np.float32))
+            comp = float(area / max(rect_area, 1.0))
+            return area * comp
+
+        if not cand_polys:
             return None
-        best = max(cnts, key=cv2.contourArea)
-        if cv2.contourArea(best) < (w * h) * 0.02:
-            return None
-        best = best.reshape(-1, 2).astype(np.int32)
-        best[:, 1] += roi_y0
-        hull = cv2.convexHull(best).reshape(-1, 2)
-        peri = cv2.arcLength(hull, True)
-        approx = cv2.approxPolyDP(hull, 0.01 * peri, True).reshape(-1, 2)
-        poly_norm = [(float(x) / w, float(y) / h) for (x, y) in approx]
+
+        cand_polys = [self._poly_clockwise(p.astype(np.float32)) for p in cand_polys]
+        best = max(cand_polys, key=score)
+        peri = cv2.arcLength(best, True)
+        best = cv2.approxPolyDP(best, 0.015 * peri, True).reshape(-1, 2)
+
+        poly_norm = [(float(x) / w, float(y) / h) for (x, y) in best]
         self._table_poly_norm = poly_norm
         return poly_norm
 
-    # ----- Face backend failover -----
+    # --- Face backend failover ---
 
     def _fallback_face_backend(self):
         if not self._face_failed and not isinstance(self._face, _FaceBackendLandmarks):
@@ -322,8 +413,7 @@ class GestureStream:
     def _safe_face_analyze(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         try:
             return self._face.analyze(frame)
-        except Exception as e:
-            # Любая ошибка в ONNX — переключаемся на фолбэк и пробуем ещё раз
+        except Exception:
             self._fallback_face_backend()
             try:
                 return self._face.analyze(frame)
@@ -331,7 +421,7 @@ class GestureStream:
                 print(f"[face] analyze failed even in fallback: {e2}")
                 return []
 
-    # ----- Matching -----
+    # --- Matching ---
 
     def _match_faces(self, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         reg = P.list_players()
@@ -341,7 +431,6 @@ class GestureStream:
         if not reg:
             return [{"bbox": f["bbox"], "id": None, "sim": 0.0} for f in faces]
 
-        # Сгруппируем реестр по размерности эмбеддинга
         buckets: Dict[int, Dict[str, Any]] = {}
         for p in reg:
             emb = np.array(p["embedding"], dtype=np.float32)
@@ -368,26 +457,38 @@ class GestureStream:
             out.append({"bbox": f["bbox"], "id": pid, "sim": simv})
         return out
 
-    # ----- Overlay -----
+    # --- Overlay ---
+
+    def _draw_table_overlay(self, frame: np.ndarray) -> np.ndarray:
+        """Только линия/полигон стола без рук и лиц."""
+        h, w = frame.shape[:2]
+        out = frame.copy()
+        table_y = int(self.table_y_ratio * h)
+        cv2.line(out, (0, table_y), (w, table_y), (110, 110, 110), 1)
+        poly_px = self._poly_px(w, h)
+        if poly_px is not None:
+            cv2.polylines(out, [poly_px.astype(np.int32)], True, (255, 210, 70), 2, cv2.LINE_AA)
+            overlay = out.copy()
+            cv2.fillPoly(overlay, [poly_px.astype(np.int32)], (50, 190, 255))
+            out = cv2.addWeighted(overlay, 0.12, out, 0.88, 0)
+        return out
 
     def _draw_overlay(self, frame: np.ndarray, payload: Dict[str, Any], face_matches: List[Dict[str, Any]]) -> np.ndarray:
         h, w = frame.shape[:2]
         out = frame.copy()
 
-        # линия-порог (на случай отсутствия полигона)
         table_y = int(self.table_y_ratio * h)
         cv2.line(out, (0, table_y), (w, table_y), (110, 110, 110), 1)
 
-        # руки
         for hand in payload.get("hands", []):
             x, y, ww, hh = hand["bbox"]
             cx, cy = hand["center"]
             cv2.rectangle(out, (x, y), (x + ww, y + hh), (0, 255, 170), 2)
             cv2.circle(out, (cx, cy), 5, (0, 255, 255), -1)
-            cv2.putText(out, hand.get("label",""), (x, max(0, y-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
+            lab = hand.get("label", "")
+            if lab:
+                cv2.putText(out, lab, (x, max(0, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
-
-        # стол-полигон
         poly_px = self._poly_px(w, h)
         if poly_px is not None:
             cv2.polylines(out, [poly_px.astype(np.int32)], True, (255, 210, 70), 2, cv2.LINE_AA)
@@ -395,7 +496,6 @@ class GestureStream:
             cv2.fillPoly(overlay, [poly_px.astype(np.int32)], (50, 190, 255))
             out = cv2.addWeighted(overlay, 0.12, out, 0.88, 0)
 
-        # лица + номера
         for m in face_matches:
             x1, y1, x2, y2 = m["bbox"]
             pid = m["id"]
@@ -404,18 +504,17 @@ class GestureStream:
             label = f"#{pid}" if pid else "?"
             cv2.putText(out, label, (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
-        # статус (видно, что поток живой)
         text = f"hands:{len(payload.get('hands', []))} faces:{len(face_matches)}"
         cv2.putText(out, text, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
         return out
 
-    # ----- JPEG -----
+    # --- JPEG ---
 
     async def _encode_jpeg(self, frame: np.ndarray) -> bytes:
         ok, buf = await asyncio.to_thread(cv2.imencode, ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
         return buf.tobytes() if ok else b""
 
-    # ----- Main loop -----
+    # --- Main loop ---
 
     async def _run(self):
         period = 1.0 / self.fps
@@ -431,15 +530,12 @@ class GestureStream:
                     break
                 continue
 
-            # защита от чёрных кадров
             if frame.size == 0 or float(frame.mean()) < 0.5:
                 black_count += 1
                 if black_count > 20:
                     print("[camera] too many black frames; attempting soft reopen…")
-                    try:
-                        self._cap.release()
-                    except Exception:
-                        pass
+                    try: self._cap.release()
+                    except Exception: pass
                     await asyncio.sleep(0.2)
                     self._cap = _open_capture(self.camera_index)
                     black_count = 0
@@ -452,60 +548,61 @@ class GestureStream:
                 black_count = 0
 
             try:
-                # сохраняем последний кадр
+                # сохранить последний кадр
                 async with self._frame_lock:
                     self._last_frame = frame
 
-                # жесты + лица (лица — через безопасный вызов с фолбэком)
-                res = await asyncio.to_thread(self._det.process_frame, frame)
-                faces = await asyncio.to_thread(self._safe_face_analyze, frame)
-                matches = self._match_faces(faces)
+                # RAW JPEG всегда держим актуальным
+                raw_jpeg = await self._encode_jpeg(frame)
+                async with self._jpeg_lock:
+                    self._last_raw_jpeg = raw_jpeg
 
-                # fist_on_table с учётом полигона
-                h, w = frame.shape[:2]
-                poly_px = self._poly_px(w, h)
-                fist_on_table = res.fist_on_table
-                if poly_px is not None:
-                    fist_on_table = any(
-                        (hnd.count == 0 and _point_in_poly(hnd.center, poly_px)) for hnd in res.hands
-                    )
+                # Выбор ветки рендера
+                if not self.detect_enabled or self.render_mode == RENDER_RAW:
+                    # чистое видео, без событий
+                    jpeg = raw_jpeg
 
-                # Привязка руки к ближайшему лицу
-                                # привязка руки к ближайшему лицу + классификация жеста
-                def center_face(bb):
-                    x1, y1, x2, y2 = bb
-                    return ((x1 + x2) // 2, (y1 + y2) // 2)
+                elif self.render_mode == RENDER_TABLE:
+                    # только стол (без вычисления лиц/жестов!)
+                    table_only = self._draw_table_overlay(frame)
+                    jpeg = await self._encode_jpeg(table_only)
 
-                face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
+                else:  # RENDER_FULL
+                    # жесты + лица
+                    res = await asyncio.to_thread(self._det.process_frame, frame)
+                    faces = await asyncio.to_thread(self._safe_face_analyze, frame)
+                    matches = self._match_faces(faces)
 
-                def _label_for_hand(h) -> tuple[str, int]:
-                    # ориентируемся на число выпрямленных пальцев
-                    if hasattr(h, "extended") and h.extended is not None:
-                        cnt = int(sum(1 for v in h.extended if v))
-                    else:
-                        cnt = int(getattr(h, "count", 0))
-                    # простая словарная классификация
-                    name = {
-                        0: "fist",
-                        1: "one",
-                        2: "two",
-                        3: "three",
-                        4: "four",
-                        5: "open",
-                    }.get(cnt, f"{cnt}-fingers")
-                    return name, cnt
+                    h, w = frame.shape[:2]
+                    poly_px = self._poly_px(w, h)
+                    fist_on_table = res.fist_on_table
+                    if poly_px is not None:
+                        fist_on_table = any((hnd.count == 0 and _point_in_poly(hnd.center, poly_px)) for hnd in res.hands)
 
-                hands_out = []
-                for hnd in res.hands:
-                    owner = None
-                    if face_centers:
-                        cx, cy = hnd.center
-                        dists = [((cx - fc[1][0]) ** 2 + (cy - fc[1][1]) ** 2, fc[0]) for fc in face_centers]
-                        dists.sort(key=lambda t: t[0])
-                        owner = dists[0][1]  # id или None
-                    label, fingers = _label_for_hand(hnd)
-                    hands_out.append(
-                        {
+                    def center_face(bb):
+                        x1, y1, x2, y2 = bb
+                        return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+                    face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
+
+                    def _label_for_hand(h) -> Tuple[str, int]:
+                        if hasattr(h, "extended") and h.extended is not None:
+                            cnt = int(sum(1 for v in h.extended if v))
+                        else:
+                            cnt = int(getattr(h, "count", 0))
+                        name = {0: "fist", 1: "one", 2: "two", 3: "three", 4: "four", 5: "open"}.get(cnt, f"{cnt}-fingers")
+                        return name, cnt
+
+                    hands_out = []
+                    for hnd in res.hands:
+                        owner = None
+                        if face_centers:
+                            cx, cy = hnd.center
+                            dists = [((cx - fc[1][0]) ** 2 + (cy - fc[1][1]) ** 2, fc[0]) for fc in face_centers]
+                            dists.sort(key=lambda t: t[0])
+                            owner = dists[0][1]
+                        label, fingers = _label_for_hand(hnd)
+                        hands_out.append({
                             "bbox": hnd.bbox,
                             "center": hnd.center,
                             "count": int(hnd.count),
@@ -513,38 +610,30 @@ class GestureStream:
                             "owner_id": owner,
                             "label": label,
                             "fingers": fingers,
+                        })
+
+                    now = time.time()
+                    if now - last_evt >= 0.2:
+                        last_evt = now
+                        payload = {
+                            "type": "gesture",
+                            "digit": res.digit,
+                            "fist_on_table": bool(fist_on_table),
+                            "hands": hands_out,
+                            "faces": [{"bbox": m["bbox"], "id": m["id"], "sim": m["sim"]} for m in matches],
                         }
-                    )
+                        try:
+                            await self.on_event(payload)
+                        except Exception:
+                            pass
 
+                    overlay = self._draw_overlay(frame, {"hands": hands_out, "fist_on_table": fist_on_table, "digit": res.digit}, matches)
+                    jpeg = await self._encode_jpeg(overlay)
 
-                # WS (5 Гц)
-                now = time.time()
-                if now - last_evt >= 0.2:
-                    last_evt = now
-                    payload = {
-                        "type": "gesture",
-                        "digit": res.digit,
-                        "fist_on_table": bool(fist_on_table),
-                        "hands": hands_out,
-                        "faces": [{"bbox": m["bbox"], "id": m["id"], "sim": m["sim"]} for m in matches],
-                    }
-                    try:
-                        await self.on_event(payload)
-                    except Exception:
-                        pass
-
-                # Рендер → JPEG
-                overlay = self._draw_overlay(
-                    frame,
-                    {"hands": hands_out, "fist_on_table": fist_on_table, "digit": res.digit},
-                    matches,
-                )
-                jpeg = await self._encode_jpeg(overlay)
                 async with self._jpeg_lock:
                     self._last_jpeg = jpeg
 
             except Exception as e:
-                # не валим цикл: отдадим raw-кадр и продолжим
                 print(f"[stream] iteration error: {e}")
                 try:
                     jpeg = await self._encode_jpeg(frame)
@@ -558,6 +647,6 @@ class GestureStream:
             except asyncio.CancelledError:
                 break
 
-    async def get_last_jpeg(self) -> Optional[bytes]:
+    async def get_last_jpeg(self, raw: bool = False) -> Optional[bytes]:
         async with self._jpeg_lock:
-            return self._last_jpeg
+            return self._last_raw_jpeg if raw else self._last_jpeg

@@ -283,6 +283,21 @@ async def players_enroll(data: dict = Body(None)):
     player = P.add_player(emb, thumb_rel, name=name)
     return {"ok": True, "player": player}
 
+@app.post("/table/begin")
+async def table_begin():
+    global _stream
+    if _stream is None:
+        return {"ok": False, "error": "video not running"}
+    _stream.begin_table_calibration()
+    return {"ok": True}
+
+@app.post("/table/end")
+async def table_end():
+    global _stream
+    if _stream is None:
+        return {"ok": False, "error": "video not running"}
+    _stream.end_table_calibration()
+    return {"ok": True}
 
 # @app.get("/video/snapshot.jpg")
 # async def snapshot():

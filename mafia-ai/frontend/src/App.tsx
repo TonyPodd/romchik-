@@ -1,98 +1,168 @@
-import React, { useEffect, useRef, useState } from 'react'
-import './index.css'
-import CameraPanel from './components/CameraPanel'
-import NeonButton from './components/NeonButton'
-import Modal from './components/Modal'
-import TablePolyDrawer from './components/TablePolyDrawer'
-import LineThreshold from './components/LineThreshold'
-import EnrollPanel from './components/EnrollPanel'
-import { getHealth, startVideo, stopVideo, autoDetectTable, setTableROI } from './api'
+// src/App.tsx
+import React, { useMemo, useState, useEffect } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import "./index.css";
+import { GlassButton } from "@/components/GlassButton";
+import { StepWelcome } from "@/pages/StepWelcome";
+import { StepConsent } from "@/pages/StepConsent";
+import { StepTable } from "@/pages/StepTable";
+import { StepRoster } from "@/pages/StepRoster";
+import { StepReady } from "@/pages/StepReady";
+import { TopProgress } from "@/components/TopProgress";
+import ThemeToggle from "@/components/ThemeToggle";
 
-export default function App(){
-  const wsRef=useRef<WebSocket|null>(null)
-  const [wsOk,setWsOk]=useState(false)
-  const [videoRunning,setVideoRunning]=useState(false)
-  const [lastGesture,setLastGesture]=useState('—')
-  const [tableRatio,setTableRatio]=useState(0.80)
+// 👉 импортируем новые API-вызовы
+import { startVideo, beginTableCalibration, endTableCalibration } from "@/api";
 
-  const [polyModal,setPolyModal]=useState(false)
-  const [lineModal,setLineModal]=useState(false)
-  const [enrollModal,setEnrollModal]=useState(false)
-  const [toast,setToast]=useState<string|null>(null)
+export type PlayersCount = 8 | 10;
 
-  useEffect(()=>{
-    if(wsRef.current) return
-    const ws=new WebSocket('ws://127.0.0.1:8000/ws'); wsRef.current=ws
-    ws.addEventListener('open',()=>setWsOk(true))
-    ws.addEventListener('close',()=>setWsOk(false))
-    ws.addEventListener('message',(e)=>{
-      try{
-        const m=JSON.parse(e.data as string)
-        if(m.type==='gesture'){
-          const hand = m.hands?.find?.(()=>true)
-          setLastGesture(`digit=${m.digit??'·'} fist=${m.fist_on_table?1:0}`)
-        }
-      }catch{}
-    })
-    return ()=>{ ws.close(); wsRef.current=null }
-  },[])
+export enum Step {
+  Welcome = 0,
+  Consent = 1,
+  Table   = 2,
+  Roster  = 3,
+  Ready   = 4,
+}
 
-  useEffect(()=>{
-    let stop=false
-    const loop=async()=>{ try{ const h=await getHealth(); if(!stop) setVideoRunning(!!h.video_running) }catch{}; if(!stop) setTimeout(loop,1500) }
-    loop(); return ()=>{ stop=true }
-  },[])
+export default function App() {
+  const [step, setStep] = useState<Step>(Step.Welcome);
+  const [players, setPlayers] = useState<PlayersCount>(8);
+  const [consented, setConsented] = useState(false);
 
-  const startCam=async()=>{ await startVideo({fps:30,table_y_ratio:tableRatio}); const h=await getHealth(); setVideoRunning(!!h.video_running) }
+  // hover-подсветка для стеклянных кнопок
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      const btn = t.closest(".glass-btn") as HTMLElement | null;
+      if (!btn) return;
+      const r = btn.getBoundingClientRect();
+      btn.style.setProperty("--mx", `${e.clientX - r.left}px`);
+      btn.style.setProperty("--my", `${e.clientY - r.top}px`);
+    };
+    window.addEventListener("mousemove", handler);
+    return () => window.removeEventListener("mousemove", handler);
+  }, []);
 
-  const calibrate=async()=>{
-    setToast('Авто-поиск стола…')
-    const r=await autoDetectTable()
-    if(r.ok){ setToast('Стол найден ✓'); setTimeout(()=>setToast(null),1200); return }
-    setToast('Обведите область стола'); setPolyModal(true)
-  }
-  const onPolySave=async(poly:[number,number][])=>{
-    setPolyModal(false); setToast('Сохраняем контур…')
-    const ok = (await setTableROI(poly)).ok
-    if(ok){ setToast('Контур сохранён ✓'); setTimeout(()=>setToast(null),1200) }
-    else { setToast('Не удалось — используйте линию-порог'); setLineModal(true) }
-  }
-  const onPolySkip=()=>{ setPolyModal(false); setLineModal(true) }
-  const onLineSave=async(r:number)=>{
-    setTableRatio(r); setLineModal(false); setToast('Перезапуск видео…')
-    await stopVideo(); await startVideo({fps:30,table_y_ratio:r})
-    const h=await getHealth(); setVideoRunning(!!h.video_running)
-    setToast('Порог сохранён ✓'); setTimeout(()=>setToast(null),1200)
-  }
+  // 👉 при входе на шаг «Стол» включаем режим калибровки, при выходе — выключаем
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      if (step === Step.Table) {
+        // на всякий — гарантируем, что камера поднята
+        try { await startVideo({ fps: 30 }); } catch {}
+        try { await beginTableCalibration(); } catch {}
+      } else {
+        try { await endTableCalibration(); } catch {}
+      }
+      if (cancelled) return;
+    })();
+
+    return () => { cancelled = true; };
+  }, [step]);
+
+  const steps = useMemo(
+    () => [
+      { id: Step.Welcome, title: "Приветствие" },
+      { id: Step.Consent, title: "Соглашение" },
+      { id: Step.Table,   title: "Стол" },
+      { id: Step.Roster,  title: "Состав" },
+      { id: Step.Ready,   title: "Готово" },
+    ],
+    []
+  );
+
+  const goPrev = () => setStep((s) => Math.max(Step.Welcome, (s - 1) as Step));
 
   return (
-    <div className="app-wrap">
-      <div className="topbar">
-        <div className="brand">Mafia AI</div>
-        <div className="chips">
-          <div className="chip">WS: <b style={{color:wsOk?'var(--ok)':'var(--bad)'}}>{wsOk?'connected':'offline'}</b></div>
-          <div className="chip">Camera: <b style={{color:videoRunning?'var(--ok)':'var(--warn)'}}>{videoRunning?'on':'off'}</b></div>
-          <div className="chip">Gesture: <b>{lastGesture}</b></div>
-        </div>
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          <NeonButton className="min" onClick={startCam}>Включить камеру</NeonButton>
-          <NeonButton className="min" onClick={()=>setEnrollModal(true)} disabled={!videoRunning}>Авторизация</NeonButton>
-          <NeonButton className="min" onClick={calibrate} disabled={!videoRunning}>Калибровка стола</NeonButton>
-        </div>
-      </div>
+    <div className="app-viewport">
+      <div className="bg-grid" />
+      <div className="bg-glow bg-glow-1" />
+      <div className="bg-glow bg-glow-2" />
+      <div className="bg-noise" />
 
-      <CameraPanel>
-        <div className="hud">
-          <span>FPS≈30</span>
-          <span className="chip">Порог: <b>{tableRatio.toFixed(3)}</b></span>
-        </div>
-      </CameraPanel>
+      <header className="topbar">
+        <div className="brand">Mafia<span>AI</span></div>
+        <div className="spacer" />
+        <TopProgress steps={steps} active={step} />
+        <div style={{ width: 10 }} />
+        <ThemeToggle />
+      </header>
 
-      {toast && <div style={{position:'fixed',left:16,bottom:16,zIndex:60}}><div className="card section" style={{padding:'10px 14px'}}>{toast}</div></div>}
+      <main className="stage">
+        <AnimatePresence mode="wait">
+          {step === Step.Welcome && (
+            <motion.div key="welcome" initial={{opacity:0,y:24}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-24}} transition={{duration:.5}} className="step-wrap">
+              <div className="card glass">
+                <div className="card-body hero">
+                  <h1 className="hero-title">Mafia<span>AI</span></h1>
+                  <p className="lead">ИИ-ведущий для спортивной мафии. Красиво. Быстро. Справедливо.</p>
+                  <GlassButton onClick={() => setStep(Step.Consent)}>Начать</GlassButton>
+                </div>
+              </div>
+            </motion.div>
+          )}
 
-      <Modal open={polyModal} onClose={onPolySkip}><TablePolyDrawer onSave={onPolySave} onCancel={onPolySkip}/></Modal>
-      <Modal open={lineModal} onClose={()=>setLineModal(false)}><LineThreshold initial={tableRatio} onSave={onLineSave} onCancel={()=>setLineModal(false)}/></Modal>
-      <Modal open={enrollModal} onClose={()=>setEnrollModal(false)}><EnrollPanel onClose={()=>setEnrollModal(false)}/></Modal>
+          {step === Step.Consent && (
+            <motion.div key="consent" initial={{opacity:0,y:24,scale:.985}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:-24,scale:.985}} transition={{type:"spring", stiffness:140, damping:18}} className="step-wrap">
+              <div className="card glass">
+                <StepConsent consented={consented} onToggle={() => setConsented(v=>!v)} />
+                <div className="step-actions">
+                  <GlassButton onClick={goPrev} variant="ghost">Назад</GlassButton>
+                  <GlassButton onClick={() => setStep(Step.Table)} disabled={!consented}>Продолжить</GlassButton>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {step === Step.Table && (
+            <motion.div key="table" initial={{opacity:0,scale:.985}} animate={{opacity:1,scale:1}} exit={{opacity:0,scale:.985}} transition={{duration:.5}} className="step-wrap">
+              <div className="card glass">
+                {/* во время этого шага бэкенд уже в режиме калибровки */}
+                <div className="card-body table-step">
+                  <StepTable />
+                </div>
+                <div className="step-actions">
+                  <GlassButton onClick={goPrev} variant="ghost">Назад</GlassButton>
+                  <GlassButton onClick={() => setStep(Step.Roster)}>Далее</GlassButton>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {step === Step.Roster && (
+            <motion.div key="roster" initial={{opacity:0,x:24}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-24}} transition={{duration:.5}} className="step-wrap">
+              <div className="card glass">
+                <StepRoster value={players} onChange={setPlayers} players={players} />
+                <div className="step-actions">
+                  <GlassButton onClick={goPrev} variant="ghost">Назад</GlassButton>
+                  <GlassButton onClick={() => setStep(Step.Ready)}>Завершить</GlassButton>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {step === Step.Ready && (
+            <motion.div key="ready" initial={{opacity:0,y:30}} animate={{opacity:1,y:0}} exit={{opacity:0}} transition={{duration:.5}} className="step-wrap">
+              <div className="card glass">
+                <div className="card-body ready">
+                  <h2 className="steptitle">Всё готово</h2>
+                  <p className="lead">Стол откалиброван, состав определён. Можно начинать матч.</p>
+                  <div className="ready-badge">Удачной игры!</div>
+                </div>
+                <div className="step-actions">
+                  <GlassButton onClick={() => setStep(Step.Welcome)} variant="ghost">В начало</GlassButton>
+                  <GlassButton onClick={() => alert("Подключим логику позже 🚀")}>Начать игру</GlassButton>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
+
+      <footer className="bottombar">
+        <div className="badge">pre-alpha UI</div>
+      </footer>
     </div>
-  )
+  );
 }

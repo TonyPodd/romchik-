@@ -118,6 +118,8 @@ if __name__ == "__main__":
     main(args)
 
 # 10 игроков / 20 рук, YOLO-детектор рук
-# python -m tests.people_gestures_run --detector yolo --yolo "C:\Users\a_nto\Code\romchik\mafia-ai\backend\models\hand_yolov8n.pt" --no-hagrid
+# python -m tests.people_gestures_run --detector yolo --yolo "C:\Users\a_nto\Code\romchik\mafia-ai\backend\models\hand_yolov8n.pt" --no-hagrid --embedder r100
+
 
 # python -m tests.people_gestures_run --detector mp --no-hagrid
+
