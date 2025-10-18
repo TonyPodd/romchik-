@@ -1,6 +1,39 @@
+# Core Framework
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
+pydantic-settings==2.5.2
+python-multipart==0.0.9
+
+# Computer Vision - Face Detection & Recognition
 opencv-python==4.10.0.84
-mediapipe==0.10.14
 numpy==1.26.4
+ultralytics==8.3.0          # YOLOv8
+insightface==0.7.3          # ArcFace face recognition
+onnxruntime==1.18.0         # ONNX runtime for models
+mediapipe==0.10.14          # MediaPipe (fallback & hands)
+
+# Audio Processing
+silero-vad==5.1             # Voice Activity Detection
+faster-whisper==1.0.3       # Optimized Whisper ASR
+soundfile==0.12.1           # Audio I/O
+pyaudio==0.2.14             # Microphone capture (optional)
+
+# Game State Machine
+python-statemachine==2.3.0
+
+# Utilities
+python-dotenv==1.0.0        # .env files
+aiofiles==24.1.0            # Async file operations
+
+# Image Processing
+Pillow==10.4.0
+
+# Optional: GPU acceleration (comment out if CPU only)
+# onnxruntime-gpu==1.18.0   # Use instead of onnxruntime for GPU
+
+# Development
+pytest==8.3.2
+pytest-asyncio==0.24.0
+black==24.8.0
+ruff==0.6.4
