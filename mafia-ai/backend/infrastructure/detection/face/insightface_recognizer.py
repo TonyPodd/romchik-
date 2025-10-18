@@ -37,18 +37,31 @@ class InsightFaceRecognizer:
             )
 
         self.device = device
-        ctx_id = 0 if device == "cuda" else -1  # -1 для CPU
+        self.model_name = model_name
+        self.app = None
+        self._initialized = False
 
-        # Инициализируем FaceAnalysis
-        self.app = FaceAnalysis(
-            name=model_name,
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider'] if device == "cuda" else ['CPUExecutionProvider']
-        )
+        try:
+            ctx_id = 0 if device == "cuda" else -1  # -1 для CPU
 
-        # Prepare с определенным размером
-        self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+            # Инициализируем FaceAnalysis с безопасными настройками
+            self.app = FaceAnalysis(
+                name=model_name,
+                providers=['CPUExecutionProvider'],  # Только CPU для стабильности
+                allowed_modules=['recognition']  # Только recognition модуль
+            )
 
-        print(f"[InsightFace] initialized with model: {model_name}, device: {device}")
+            # Prepare с меньшим размером для снижения нагрузки на память
+            self.app.prepare(ctx_id=ctx_id, det_size=(320, 320))
+
+            self._initialized = True
+            print(f"[InsightFace] initialized with model: {model_name}, device: {device}")
+
+        except Exception as e:
+            print(f"[InsightFace] ⚠️  Failed to initialize: {e}")
+            print(f"[InsightFace] Falling back to safe mode...")
+            self._initialized = False
+            self.app = None
 
     def get_embedding(self, face_img: np.ndarray) -> Optional[np.ndarray]:
         """
@@ -60,6 +73,9 @@ class InsightFaceRecognizer:
         Returns:
             512D эмбеддинг или None
         """
+        if not self._initialized or self.app is None:
+            return None
+
         if face_img is None or face_img.size == 0:
             return None
 
@@ -93,6 +109,10 @@ class InsightFaceRecognizer:
         Returns:
             Список лиц с эмбеддингами
         """
+        if not self._initialized or self.app is None:
+            print("[InsightFace] ⚠️  Not initialized, returning faces without embeddings")
+            return faces
+
         enriched_faces = []
 
         for face in faces:
@@ -121,5 +141,8 @@ class InsightFaceRecognizer:
                     landmarks=face.landmarks
                 )
                 enriched_faces.append(enriched_face)
+            else:
+                # Если эмбеддинг не получен, возвращаем лицо без эмбеддинга
+                enriched_faces.append(face)
 
         return enriched_faces
