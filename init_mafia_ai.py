@@ -9,8 +9,8 @@ files[".gitignore"] = """# Python
 __pycache__/
 *.pyc
 .venv/
-# Node
 node_modules/
+# Node
 dist/
 .next/
 .DS_Store
