@@ -17,6 +17,10 @@ from starlette.responses import StreamingResponse
 from video.stream_worker import GestureStream
 from storage import players as P
 
+# Новая архитектура
+from api.routers import game as game_router
+from application.services import get_container
+
 # --------------------------------------------------------------------------------------
 # App / CORS / Static
 # --------------------------------------------------------------------------------------
@@ -44,6 +48,9 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
+
+# Подключаем новые роутеры
+app.include_router(game_router.router)
 
 # --------------------------------------------------------------------------------------
 # Global state
@@ -250,6 +257,10 @@ async def video_mjpeg():
 
 @app.on_event("startup")
 async def _startup():
+    # Инициализируем ServiceContainer
+    container = get_container()
+    print("[App] ✅ ServiceContainer initialized")
+
     auto = os.getenv("AUTO_START_GESTURES", "1") == "1"
     if auto:
         await video_start()
@@ -260,6 +271,11 @@ async def _shutdown():
     if _stream:
         await _stream.stop()
         _stream = None
+
+    # Cleanup ServiceContainer
+    from application.services import reset_container
+    reset_container()
+    print("[App] ✅ ServiceContainer cleaned up")
 
 # --------------------------------------------------------------------------------------
 # WebSocket
