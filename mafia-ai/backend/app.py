@@ -104,6 +104,21 @@ def _embed_diverse(en: np.ndarray, samples: List[np.ndarray], max_sim: float = 0
     sim = float(np.max(S @ en))
     return sim < max_sim
 
+def _angle_from_pts5(pts5: np.ndarray) -> tuple:
+    """
+    Грубая оценка поворота головы по 5-точкам:
+    вернём yaw (влево/вправо) и pitch (вверх/вниз) в градусах примерно.
+    pts5: [[x,y], ...] - 5 точек: 0=left_eye, 1=right_eye, 2=nose, 3=mouth_left, 4=mouth_right
+    """
+    L, R = pts5[0], pts5[1]
+    eye_dx = R[0] - L[0]
+    eye_dy = R[1] - L[1]
+    yaw = np.degrees(np.arctan2(eye_dy, max(1e-6, eye_dx)))  # наклон линии глаз
+    # вертикальная: нос относительно середины глаз
+    mid = (L + R) / 2.0
+    pitch = np.degrees(np.arctan2(mid[1] - pts5[2][1], max(1e-6, abs(eye_dx))))
+    return float(yaw), float(pitch)
+
 async def _current_frame_bgr() -> Optional[np.ndarray]:
     """Берём самый свежий кадр: сначала raw-JPEG из стримера (если доступно), затем _last_frame."""
     global _stream
@@ -466,7 +481,11 @@ async def enroll_start(data: Dict[str, Any] = Body(None)):
         "last_add": 0.0,     # время последнего успешного ДОБАВЛЕНИЯ
         "last_snap": 0.0,    # время последнего СНИМКA (для антиспама)
         "hint": "Смотрите прямо в камеру",  # подсказка для пользователя
-        "positions": {"front": 0, "left": 0, "right": 0, "up": 0, "down": 0},  # покрытие ракурсов
+        "yaw_left": 0,       # счетчик образцов с поворотом влево
+        "yaw_right": 0,      # счетчик образцов с поворотом вправо
+        "pitch_up": 0,       # счетчик образцов с головой вверх
+        "pitch_down": 0,     # счетчик образцов с головой вниз
+        "front": 0,          # счетчик фронтальных образцов
     }
     return {"ok": True, "session": {"id": _enroll["id"], "name": name, "target": target, "count": 0}}
 
@@ -553,20 +572,36 @@ async def enroll_snap():
     _enroll["last_add"] = now
     count = len(_enroll["samples"])
 
-    # Обновляем подсказку на основе прогресса
-    progress_ratio = count / max(1, target)
-    if count == 0:
+    # Обновляем покрытие ракурсов на основе pts5 (если есть)
+    pts5 = f.get("pts5")
+    if pts5 is not None and isinstance(pts5, np.ndarray) and pts5.shape == (5, 2):
+        yaw, pitch = _angle_from_pts5(pts5)
+        # Определяем ракурс
+        if yaw > 8:
+            _enroll["yaw_right"] += 1
+        elif yaw < -8:
+            _enroll["yaw_left"] += 1
+        else:
+            _enroll["front"] += 1
+
+        if pitch > 6:
+            _enroll["pitch_up"] += 1
+        elif pitch < -6:
+            _enroll["pitch_down"] = 1
+
+    # Умные подсказки на основе недостающих ракурсов
+    if _enroll["front"] < 2:
         _enroll["hint"] = "Смотрите прямо в камеру"
-    elif progress_ratio < 0.25:
+    elif _enroll["yaw_left"] < 2:
         _enroll["hint"] = "Поверните голову немного влево"
-    elif progress_ratio < 0.5:
+    elif _enroll["yaw_right"] < 2:
         _enroll["hint"] = "Поверните голову немного вправо"
-    elif progress_ratio < 0.75:
+    elif _enroll["pitch_up"] < 2:
         _enroll["hint"] = "Поднимите голову чуть выше"
-    elif progress_ratio < 0.9:
+    elif _enroll["pitch_down"] < 2:
         _enroll["hint"] = "Опустите голову чуть ниже"
     else:
-        _enroll["hint"] = "Отлично! Почти готово"
+        _enroll["hint"] = "Отлично! Продолжайте"
 
     return {"ok": True, "added": True, "count": count, "target": target, "hint": _enroll["hint"]}
 

@@ -236,10 +236,23 @@
 /* Animations */
 @keyframes pulse {
   0%, 100% {
-    opacity: 1;
+    opacity: 0.6;
+    transform: scale(1);
   }
   50% {
-    opacity: 0.5;
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes breathe {
+  0%, 100% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
   }
 }
 

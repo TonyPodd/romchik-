@@ -27,7 +27,7 @@ export function FaceIDScanner({ state, progress = 0, videoUrl }: FaceIDScannerPr
   const getStateColor = () => {
     switch (state) {
       case 'scanning':
-        return '#4f46e5';
+        return '#10b981'; // зеленый для сканирования
       case 'success':
         return '#10b981';
       case 'error':
@@ -77,62 +77,26 @@ export function FaceIDScanner({ state, progress = 0, videoUrl }: FaceIDScannerPr
         alignItems: 'center',
         justifyContent: 'center',
       }}>
-        {/* Simple corner brackets - only when scanning */}
-        {state === 'scanning' && (
-          <>
-            <div style={{
-              position: 'absolute',
-              top: '15%',
-              left: '15%',
-              width: '50px',
-              height: '50px',
-              borderTop: `2px solid ${getStateColor()}`,
-              borderLeft: `2px solid ${getStateColor()}`,
-              opacity: 0.4,
-            }} />
-            <div style={{
-              position: 'absolute',
-              top: '15%',
-              right: '15%',
-              width: '50px',
-              height: '50px',
-              borderTop: `2px solid ${getStateColor()}`,
-              borderRight: `2px solid ${getStateColor()}`,
-              opacity: 0.4,
-            }} />
-            <div style={{
-              position: 'absolute',
-              bottom: '15%',
-              left: '15%',
-              width: '50px',
-              height: '50px',
-              borderBottom: `2px solid ${getStateColor()}`,
-              borderLeft: `2px solid ${getStateColor()}`,
-              opacity: 0.4,
-            }} />
-            <div style={{
-              position: 'absolute',
-              bottom: '15%',
-              right: '15%',
-              width: '50px',
-              height: '50px',
-              borderBottom: `2px solid ${getStateColor()}`,
-              borderRight: `2px solid ${getStateColor()}`,
-              opacity: 0.4,
-            }} />
-          </>
-        )}
-
-        {/* Center progress circle - minimal */}
+        {/* Center progress circle - large and dynamic */}
         {state === 'scanning' && (
           <div style={{
             position: 'relative',
-            width: '80px',
-            height: '80px',
+            width: '200px',
+            height: '200px',
           }}>
+            {/* Pulsating glow */}
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                borderRadius: '50%',
+                background: `radial-gradient(circle, ${getStateColor()}40, transparent 70%)`,
+                animation: 'pulse 2s ease-in-out infinite',
+              }}
+            />
             <svg
-              width="80"
-              height="80"
+              width="200"
+              height="200"
               style={{
                 position: 'absolute',
                 top: 0,
@@ -140,45 +104,60 @@ export function FaceIDScanner({ state, progress = 0, videoUrl }: FaceIDScannerPr
                 transform: 'rotate(-90deg)',
               }}
             >
+              {/* Background circle */}
               <circle
-                cx="40"
-                cy="40"
-                r="35"
+                cx="100"
+                cy="100"
+                r="95"
                 fill="none"
                 stroke="rgba(255, 255, 255, 0.1)"
-                strokeWidth="2"
+                strokeWidth="3"
               />
+              {/* Progress circle with glow */}
               <circle
-                cx="40"
-                cy="40"
-                r="35"
+                cx="100"
+                cy="100"
+                r="95"
                 fill="none"
                 stroke={getStateColor()}
-                strokeWidth="2"
+                strokeWidth="4"
                 strokeLinecap="round"
-                strokeDasharray={`${2 * Math.PI * 35}`}
-                strokeDashoffset={`${2 * Math.PI * 35 * (1 - progress / 100)}`}
+                strokeDasharray={`${2 * Math.PI * 95}`}
+                strokeDashoffset={`${2 * Math.PI * 95 * (1 - progress / 100)}`}
                 style={{
                   transition: 'stroke-dashoffset 0.3s ease',
+                  filter: `drop-shadow(0 0 8px ${getStateColor()})`,
                 }}
               />
             </svg>
 
-            {/* Center dot */}
+            {/* Center content */}
             <div style={{
               position: 'absolute',
               inset: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              flexDirection: 'column',
+              gap: '0.5rem',
             }}>
+              {/* Animated scanning icon */}
               <div style={{
-                width: '8px',
-                height: '8px',
-                background: getStateColor(),
-                borderRadius: '50%',
-                opacity: 0.6,
-              }} />
+                fontSize: '2rem',
+                color: getStateColor(),
+                animation: 'breathe 2s ease-in-out infinite',
+              }}>
+                👤
+              </div>
+              {/* Progress percentage */}
+              <div style={{
+                color: getStateColor(),
+                fontSize: '1.25rem',
+                fontWeight: 600,
+                textShadow: `0 0 10px ${getStateColor()}80`,
+              }}>
+                {Math.round(progress)}%
+              </div>
             </div>
           </div>
         )}
@@ -198,21 +177,6 @@ export function FaceIDScanner({ state, progress = 0, videoUrl }: FaceIDScannerPr
         )}
       </div>
 
-      {/* Progress text */}
-      {state === 'scanning' && (
-        <div style={{
-          position: 'absolute',
-          bottom: '1rem',
-          left: 0,
-          right: 0,
-          textAlign: 'center',
-          color: '#94a3b8',
-          fontSize: '0.875rem',
-          fontWeight: 500,
-        }}>
-          {Math.round(progress)}%
-        </div>
-      )}
     </div>
   );
 }
