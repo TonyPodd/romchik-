@@ -217,6 +217,7 @@ class GestureStream:
         self._frame_lock = asyncio.Lock()
 
         self._table_poly_norm: Optional[List[Tuple[float, float]]] = None
+        self._frame_counter: int = 0  # Для анимации
 
     # --- Control API ---
 
@@ -429,9 +430,10 @@ class GestureStream:
         if not faces:
             return out
         if not reg:
-            return [{"bbox": f["bbox"], "id": None, "sim": 0.0} for f in faces]
+            return [{"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0} for f in faces]
 
         buckets: Dict[int, Dict[str, Any]] = {}
+        id_to_name: Dict[int, str] = {}  # Map player ID to name
         for p in reg:
             emb = np.array(p["embedding"], dtype=np.float32)
             d = int(emb.shape[0])
@@ -439,6 +441,7 @@ class GestureStream:
                 buckets[d] = {"ids": [], "embs": []}
             buckets[d]["ids"].append(p["id"])
             buckets[d]["embs"].append(emb)
+            id_to_name[p["id"]] = p.get("name", f"Player {p['id']}")  # Store name
         for d in list(buckets.keys()):
             E = np.stack(buckets[d]["embs"], axis=0)
             buckets[d]["norm"] = E / (np.linalg.norm(E, axis=1, keepdims=True) + 1e-6)
@@ -446,7 +449,7 @@ class GestureStream:
         for f in faces:
             emb = f["embedding"].astype(np.float32)
             d = int(emb.shape[0])
-            pid, simv = None, 0.0
+            pid, pname, simv = None, None, 0.0
             if d in buckets:
                 embn = emb / (np.linalg.norm(emb) + 1e-6)
                 sims = buckets[d]["norm"] @ embn
@@ -454,7 +457,8 @@ class GestureStream:
                 simv = float(sims[j])
                 if simv >= self._face.sim_threshold:
                     pid = buckets[d]["ids"][j]
-            out.append({"bbox": f["bbox"], "id": pid, "sim": simv})
+                    pname = id_to_name.get(pid)  # Get name from map
+            out.append({"bbox": f["bbox"], "id": pid, "name": pname, "sim": simv})
         return out
 
     # --- Overlay ---
@@ -499,13 +503,47 @@ class GestureStream:
         for m in face_matches:
             x1, y1, x2, y2 = m["bbox"]
             pid = m["id"]
-            color = (103, 184, 255) if pid else (120, 120, 120)
-            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-            label = f"#{pid}" if pid else "?"
+            pname = m.get("name")
+
+            # Анимация для распознанных лиц
+            if pid:
+                # Плавная пульсация (30 frames цикл)
+                pulse = np.sin(self._frame_counter * 0.1) * 0.3 + 0.7  # от 0.4 до 1.0
+                color_r = int(103 * pulse)
+                color_g = int(184 * pulse)
+                color_b = int(255 * pulse)
+                color = (color_b, color_g, color_r)
+                thickness = 3 if pulse > 0.85 else 2
+
+                # Рисуем прямоугольник с анимацией
+                cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
+
+                # Добавляем угловые акценты
+                corner_len = 20
+                corner_color = (color_b, color_g, color_r)
+                # Верхний левый
+                cv2.line(out, (x1, y1), (x1 + corner_len, y1), corner_color, 4)
+                cv2.line(out, (x1, y1), (x1, y1 + corner_len), corner_color, 4)
+                # Верхний правый
+                cv2.line(out, (x2, y1), (x2 - corner_len, y1), corner_color, 4)
+                cv2.line(out, (x2, y1), (x2, y1 + corner_len), corner_color, 4)
+                # Нижний левый
+                cv2.line(out, (x1, y2), (x1 + corner_len, y2), corner_color, 4)
+                cv2.line(out, (x1, y2), (x1, y2 - corner_len), corner_color, 4)
+                # Нижний правый
+                cv2.line(out, (x2, y2), (x2 - corner_len, y2), corner_color, 4)
+                cv2.line(out, (x2, y2), (x2, y2 - corner_len), corner_color, 4)
+            else:
+                # Простой серый прямоугольник для нераспознанных лиц
+                color = (120, 120, 120)
+                cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+
+            label = pname if pname else "?"
             cv2.putText(out, label, (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
-        text = f"hands:{len(payload.get('hands', []))} faces:{len(face_matches)}"
-        cv2.putText(out, text, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        # Don't show hands/faces count during enrollment
+        # text = f"hands:{len(payload.get('hands', []))} faces:{len(face_matches)}"
+        # cv2.putText(out, text, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
         return out
 
     # --- JPEG ---
@@ -641,6 +679,9 @@ class GestureStream:
                         self._last_jpeg = jpeg
                 except Exception:
                     pass
+
+            # Increment frame counter for animation
+            self._frame_counter = (self._frame_counter + 1) % 1000  # Reset every 1000 frames
 
             try:
                 await asyncio.sleep(period)

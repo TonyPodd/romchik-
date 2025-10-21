@@ -465,6 +465,8 @@ async def enroll_start(data: Dict[str, Any] = Body(None)):
         "thumb": None,       # np.ndarray (BGR)
         "last_add": 0.0,     # время последнего успешного ДОБАВЛЕНИЯ
         "last_snap": 0.0,    # время последнего СНИМКA (для антиспама)
+        "hint": "Смотрите прямо в камеру",  # подсказка для пользователя
+        "positions": {"front": 0, "left": 0, "right": 0, "up": 0, "down": 0},  # покрытие ракурсов
     }
     return {"ok": True, "session": {"id": _enroll["id"], "name": name, "target": target, "count": 0}}
 
@@ -479,7 +481,7 @@ async def enroll_status():
             return {"ok": False, "error": "no_session"}
         c = len(_enroll["samples"])
         t = _enroll["target"]
-        return {"ok": True, "name": _enroll["name"], "count": c, "target": t, "progress": c / max(1, t)}
+        return {"ok": True, "name": _enroll["name"], "count": c, "target": t, "progress": c / max(1, t), "hint": _enroll.get("hint", "")}
 
 @app.post("/players/enroll/snap")
 async def enroll_snap():
@@ -550,7 +552,23 @@ async def enroll_snap():
         _enroll["thumb"] = crop.copy()
     _enroll["last_add"] = now
     count = len(_enroll["samples"])
-    return {"ok": True, "added": True, "count": count, "target": target}
+
+    # Обновляем подсказку на основе прогресса
+    progress_ratio = count / max(1, target)
+    if count == 0:
+        _enroll["hint"] = "Смотрите прямо в камеру"
+    elif progress_ratio < 0.25:
+        _enroll["hint"] = "Поверните голову немного влево"
+    elif progress_ratio < 0.5:
+        _enroll["hint"] = "Поверните голову немного вправо"
+    elif progress_ratio < 0.75:
+        _enroll["hint"] = "Поднимите голову чуть выше"
+    elif progress_ratio < 0.9:
+        _enroll["hint"] = "Опустите голову чуть ниже"
+    else:
+        _enroll["hint"] = "Отлично! Почти готово"
+
+    return {"ok": True, "added": True, "count": count, "target": target, "hint": _enroll["hint"]}
 
 # алиас под фронтовой вызов
 @app.post("/players/enroll/step")
