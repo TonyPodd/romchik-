@@ -212,3 +212,6 @@ class EnrollService:
         total = self.state.collected
         self.state = EnrollState()  # reset
         return {"ok": True, "id": pid, "name": name, "samples": total}
+
+
+# pkill -9 -f "uvicorn app:app" && pkill -9 -f "vite" && pkill -9 -f "npm run dev" && sleep 1 && echo "✅ Все процессы завершены"

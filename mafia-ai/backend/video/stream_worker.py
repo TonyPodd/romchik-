@@ -64,14 +64,14 @@ def _point_in_poly(px: Tuple[int, int], poly: np.ndarray) -> bool:
 # ---------------- Face identification backends ----------------
 
 class _FaceBackendBase:
-    sim_threshold: float = 0.38
+    sim_threshold: float = 0.52  # Increased from 0.38 for better accuracy
     def analyze(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
 
 class _FaceBackendONNX(_FaceBackendBase):
     """ArcFace ONNX + MediaPipe FaceDetection для bbox."""
-    def __init__(self, sim_threshold: float = 0.38):
+    def __init__(self, sim_threshold: float = 0.52):  # Increased from 0.38
         import onnxruntime as ort
         import mediapipe as mp
         from pathlib import Path
@@ -171,7 +171,7 @@ def _make_face_backend_initial() -> _FaceBackendBase:
         return _FaceBackendLandmarks(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.85")))
     print("[face] using ONNX backend (auto-fallback enabled)")
     try:
-        return _FaceBackendONNX(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.38")))
+        return _FaceBackendONNX(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.52")))
     except Exception as e:
         print(f"[face] ONNX init failed: {e}. Falling back to LANDMARKS.")
         return _FaceBackendLandmarks(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.85")))
@@ -453,10 +453,22 @@ class GestureStream:
             if d in buckets:
                 embn = emb / (np.linalg.norm(emb) + 1e-6)
                 sims = buckets[d]["norm"] @ embn
-                j = int(np.argmax(sims))
-                simv = float(sims[j])
-                if simv >= self._face.sim_threshold:
-                    pid = buckets[d]["ids"][j]
+
+                # Find best match with confidence check
+                sorted_indices = np.argsort(sims)[::-1]  # Sort descending
+                best_sim = float(sims[sorted_indices[0]])
+
+                # Check if match is confident (significantly better than 2nd best)
+                is_confident = True
+                if len(sorted_indices) > 1:
+                    second_best_sim = float(sims[sorted_indices[1]])
+                    # Require at least 0.08 difference from second best
+                    is_confident = (best_sim - second_best_sim) >= 0.08
+
+                simv = best_sim
+                # Only assign ID if similarity is above threshold AND match is confident
+                if simv >= self._face.sim_threshold and is_confident:
+                    pid = buckets[d]["ids"][sorted_indices[0]]
                     pname = id_to_name.get(pid)  # Get name from map
             out.append({"bbox": f["bbox"], "id": pid, "name": pname, "sim": simv})
         return out
