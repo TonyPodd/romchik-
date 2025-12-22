@@ -204,14 +204,14 @@ async def video_start(
     table_y_ratio: Optional[float] = None,
 ):
     """
-    POST /video/start?camera_index=0&fps=30&table_y_ratio=0.8
+    POST /video/start?camera_index=0&fps=24&table_y_ratio=0.8
     """
     global _stream
     if _stream:
         return {"ok": True, "status": "already_running"}
 
     cam = int(os.getenv("CAMERA_INDEX", "0")) if camera_index is None else int(camera_index)
-    f = int(os.getenv("GESTURE_FPS", "30")) if fps is None else int(fps)
+    f = int(os.getenv("GESTURE_FPS", "24")) if fps is None else int(fps)  # 24fps for better CPU performance
     tyr = float(os.getenv("TABLE_Y_RATIO", "0.80")) if table_y_ratio is None else float(table_y_ratio)
 
     _stream = GestureStream(on_event=ws_broadcast, camera_index=cam, fps=f, table_y_ratio=tyr)

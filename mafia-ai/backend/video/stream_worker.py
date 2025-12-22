@@ -185,7 +185,7 @@ class GestureStream:
         on_event: EventCallback,
         camera_index: int = 0,
         table_y_ratio: float = 0.80,
-        fps: int = 30,
+        fps: int = 24,  # Reduced from 30 for better CPU performance
         width: int = 1280,
         height: int = 720,
     ):
@@ -218,6 +218,11 @@ class GestureStream:
 
         self._table_poly_norm: Optional[List[Tuple[float, float]]] = None
         self._frame_counter: int = 0  # Для анимации
+
+        # Performance optimization: face detection caching
+        self._face_detect_interval = 10  # Run face detection every N frames (10 = 3x/sec at 30fps)
+        self._last_faces: List[Dict[str, Any]] = []  # Cached face detections
+        self._last_matches: List[Dict[str, Any]] = []  # Cached face matches
 
     # --- Control API ---
 
@@ -256,7 +261,7 @@ class GestureStream:
             if frame.size and float(frame.mean()) > 1.0:
                 async with self._frame_lock:
                     self._last_frame = frame.copy()
-                ok2, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                ok2, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
                 if ok2:
                     async with self._jpeg_lock:
                         self._last_jpeg = buf.tobytes()
@@ -561,7 +566,8 @@ class GestureStream:
     # --- JPEG ---
 
     async def _encode_jpeg(self, frame: np.ndarray) -> bytes:
-        ok, buf = await asyncio.to_thread(cv2.imencode, ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+        # Lower quality for faster encoding on CPU (60 is good balance)
+        ok, buf = await asyncio.to_thread(cv2.imencode, ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
         return buf.tobytes() if ok else b""
 
     # --- Main loop ---
@@ -618,10 +624,19 @@ class GestureStream:
                     jpeg = await self._encode_jpeg(table_only)
 
                 else:  # RENDER_FULL
-                    # жесты + лица
+                    # жесты + лица (with optimized face detection)
                     res = await asyncio.to_thread(self._det.process_frame, frame)
-                    faces = await asyncio.to_thread(self._safe_face_analyze, frame)
-                    matches = self._match_faces(faces)
+
+                    # Optimize: only run face detection every N frames, use cache otherwise
+                    if self._frame_counter % self._face_detect_interval == 0:
+                        faces = await asyncio.to_thread(self._safe_face_analyze, frame)
+                        self._last_faces = faces
+                        matches = self._match_faces(faces)
+                        self._last_matches = matches
+                    else:
+                        # Use cached results
+                        faces = self._last_faces
+                        matches = self._last_matches
 
                     h, w = frame.shape[:2]
                     poly_px = self._poly_px(w, h)
