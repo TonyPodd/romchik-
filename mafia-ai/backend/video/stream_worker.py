@@ -64,14 +64,14 @@ def _point_in_poly(px: Tuple[int, int], poly: np.ndarray) -> bool:
 # ---------------- Face identification backends ----------------
 
 class _FaceBackendBase:
-    sim_threshold: float = 0.60  # Higher threshold for better person differentiation
+    sim_threshold: float = 0.40  # Balanced threshold for reliable recognition
     def analyze(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
 
 class _FaceBackendONNX(_FaceBackendBase):
     """ArcFace ONNX + MediaPipe FaceDetection для bbox."""
-    def __init__(self, sim_threshold: float = 0.60):  # Higher threshold for better accuracy
+    def __init__(self, sim_threshold: float = 0.40):  # Balanced threshold for recognition
         import onnxruntime as ort
         import mediapipe as mp
         from pathlib import Path
@@ -462,8 +462,8 @@ class GestureStream:
                 is_confident = True
                 if len(sorted_indices) > 1:
                     second_best_sim = float(sims[sorted_indices[1]])
-                    # Require at least 0.08 difference from second best
-                    is_confident = (best_sim - second_best_sim) >= 0.08
+                    # Require at least 0.05 difference from second best (lowered for better detection)
+                    is_confident = (best_sim - second_best_sim) >= 0.05
 
                 simv = best_sim
                 # Only assign ID if similarity is above threshold AND match is confident
