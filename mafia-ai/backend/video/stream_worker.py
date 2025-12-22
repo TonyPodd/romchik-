@@ -64,14 +64,14 @@ def _point_in_poly(px: Tuple[int, int], poly: np.ndarray) -> bool:
 # ---------------- Face identification backends ----------------
 
 class _FaceBackendBase:
-    sim_threshold: float = 0.40  # Balanced threshold for reliable recognition
+    sim_threshold: float = 0.40  # Moderate threshold - tracking provides stability
     def analyze(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
 
 class _FaceBackendONNX(_FaceBackendBase):
     """ArcFace ONNX + MediaPipe FaceDetection для bbox."""
-    def __init__(self, sim_threshold: float = 0.40):  # Balanced threshold for recognition
+    def __init__(self, sim_threshold: float = 0.40):  # Moderate threshold - tracking provides stability
         import onnxruntime as ort
         import mediapipe as mp
         from pathlib import Path
@@ -177,6 +177,106 @@ def _make_face_backend_initial() -> _FaceBackendBase:
         return _FaceBackendLandmarks(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.85")))
 
 
+# ---------------- Face Tracking ----------------
+
+class FaceTrack:
+    """Represents a tracked face across multiple frames"""
+    def __init__(self, track_id: int, bbox: Tuple[int, int, int, int], embedding: np.ndarray):
+        self.track_id = track_id
+        self.bbox = bbox
+        self.embedding = embedding
+        self.player_id: Optional[int] = None
+        self.player_name: Optional[str] = None
+        self.age = 0  # frames since last detection
+        self.match_history: List[Tuple[Optional[int], float]] = []  # (player_id, similarity)
+        self.stable_frames = 0  # consecutive frames with same player_id
+
+    def update(self, bbox: Tuple[int, int, int, int], embedding: np.ndarray):
+        """Update track with new detection"""
+        self.bbox = bbox
+        self.embedding = embedding
+        self.age = 0
+
+
+class FaceTracker:
+    """Tracks faces across frames for stable identification"""
+    def __init__(self, max_age: int = 30, iou_threshold: float = 0.3):
+        self.tracks: List[FaceTrack] = []
+        self.next_track_id = 0
+        self.max_age = max_age  # frames before track is deleted
+        self.iou_threshold = iou_threshold
+
+    @staticmethod
+    def _iou(bbox1: Tuple[int, int, int, int], bbox2: Tuple[int, int, int, int]) -> float:
+        """Calculate Intersection over Union of two bounding boxes"""
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+
+        # Intersection
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return 0.0
+
+        intersection = (x2_i - x1_i) * (y2_i - y1_i)
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - intersection
+
+        return intersection / max(union, 1.0)
+
+    def update(self, detections: List[Dict[str, Any]]) -> List[FaceTrack]:
+        """
+        Update tracks with new detections.
+        Returns list of active tracks.
+        """
+        # Age all tracks
+        for track in self.tracks:
+            track.age += 1
+
+        # Match detections to tracks using IoU
+        matched_tracks = set()
+        matched_detections = set()
+
+        # Create cost matrix (negative IoU for Hungarian algorithm)
+        if self.tracks and detections:
+            for det_idx, det in enumerate(detections):
+                det_bbox = det["bbox"]
+                best_iou = 0.0
+                best_track_idx = None
+
+                for track_idx, track in enumerate(self.tracks):
+                    if track_idx in matched_tracks:
+                        continue
+
+                    iou = self._iou(det_bbox, track.bbox)
+                    if iou > best_iou and iou > self.iou_threshold:
+                        best_iou = iou
+                        best_track_idx = track_idx
+
+                # Greedy assignment: match detection to best track
+                if best_track_idx is not None:
+                    track = self.tracks[best_track_idx]
+                    track.update(det_bbox, det["embedding"])
+                    matched_tracks.add(best_track_idx)
+                    matched_detections.add(det_idx)
+
+        # Create new tracks for unmatched detections
+        for det_idx, det in enumerate(detections):
+            if det_idx not in matched_detections:
+                new_track = FaceTrack(self.next_track_id, det["bbox"], det["embedding"])
+                self.tracks.append(new_track)
+                self.next_track_id += 1
+
+        # Remove old tracks
+        self.tracks = [t for t in self.tracks if t.age < self.max_age]
+
+        return self.tracks
+
+
 # ---------------- Main stream ----------------
 
 class GestureStream:
@@ -200,6 +300,7 @@ class GestureStream:
         self._det = GestureDetector(table_y_ratio=table_y_ratio)
         self._face: _FaceBackendBase = _make_face_backend_initial()
         self._face_failed = False
+        self._face_tracker = FaceTracker(max_age=30, iou_threshold=0.3)
 
         self._cap: Optional[cv2.VideoCapture] = None
         self._task: Optional[asyncio.Task] = None
@@ -422,55 +523,113 @@ class GestureStream:
                 print(f"[face] analyze failed even in fallback: {e2}")
                 return []
 
-    # --- Matching ---
+    # --- Matching with Tracking ---
 
     def _match_faces(self, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Match detected faces to registered players using temporal tracking.
+        Returns list of matched faces with stable player assignments.
+        """
         reg = P.list_players()
-        out: List[Dict[str, Any]] = []
-        if not faces:
-            return out
-        if not reg:
-            return [{"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0} for f in faces]
 
-        buckets: Dict[int, Dict[str, Any]] = {}
-        id_to_name: Dict[int, str] = {}  # Map player ID to name
+        # Update tracker with new detections
+        tracks = self._face_tracker.update(faces)
+
+        if not reg:
+            # No registered players - return unidentified faces
+            return [{"bbox": t.bbox, "id": None, "name": None, "sim": 0.0} for t in tracks]
+
+        # Prepare player embeddings
+        player_ids = []
+        player_embeddings = []
+        id_to_name: Dict[int, str] = {}
+
         for p in reg:
             emb = np.array(p["embedding"], dtype=np.float32)
-            d = int(emb.shape[0])
-            if d not in buckets:
-                buckets[d] = {"ids": [], "embs": []}
-            buckets[d]["ids"].append(p["id"])
-            buckets[d]["embs"].append(emb)
-            id_to_name[p["id"]] = p.get("name", f"Player {p['id']}")  # Store name
-        for d in list(buckets.keys()):
-            E = np.stack(buckets[d]["embs"], axis=0)
-            buckets[d]["norm"] = E / (np.linalg.norm(E, axis=1, keepdims=True) + 1e-6)
+            emb_norm = emb / (np.linalg.norm(emb) + 1e-6)
+            player_ids.append(p["id"])
+            player_embeddings.append(emb_norm)
+            id_to_name[p["id"]] = p.get("name", f"Player {p['id']}")
 
-        for f in faces:
-            emb = f["embedding"].astype(np.float32)
-            d = int(emb.shape[0])
-            pid, pname, simv = None, None, 0.0
-            if d in buckets:
-                embn = emb / (np.linalg.norm(emb) + 1e-6)
-                sims = buckets[d]["norm"] @ embn
+        player_embeddings_matrix = np.stack(player_embeddings, axis=0)  # shape: (num_players, emb_dim)
 
-                # Find best match with confidence check
-                sorted_indices = np.argsort(sims)[::-1]  # Sort descending
-                best_sim = float(sims[sorted_indices[0]])
+        # Match each track to players
+        track_to_player: Dict[int, Tuple[Optional[int], float]] = {}  # track_id -> (player_id, similarity)
 
-                # Check if match is confident (significantly better than 2nd best)
-                is_confident = True
-                if len(sorted_indices) > 1:
-                    second_best_sim = float(sims[sorted_indices[1]])
-                    # Require at least 0.05 difference from second best (lowered for better detection)
-                    is_confident = (best_sim - second_best_sim) >= 0.05
+        for track in tracks:
+            # Normalize track embedding
+            emb_norm = track.embedding / (np.linalg.norm(track.embedding) + 1e-6)
 
-                simv = best_sim
-                # Only assign ID if similarity is above threshold AND match is confident
-                if simv >= self._face.sim_threshold and is_confident:
-                    pid = buckets[d]["ids"][sorted_indices[0]]
-                    pname = id_to_name.get(pid)  # Get name from map
-            out.append({"bbox": f["bbox"], "id": pid, "name": pname, "sim": simv})
+            # Compute similarities to all players
+            sims = player_embeddings_matrix @ emb_norm  # shape: (num_players,)
+
+            best_idx = int(np.argmax(sims))
+            best_sim = float(sims[best_idx])
+
+            # Use lower threshold for initial match, rely on tracking for stability
+            if best_sim >= 0.35:  # Lower threshold, tracking provides stability
+                candidate_player_id = player_ids[best_idx]
+                track_to_player[track.track_id] = (candidate_player_id, best_sim)
+
+                # Update track's match history for temporal smoothing
+                track.match_history.append((candidate_player_id, best_sim))
+                if len(track.match_history) > 10:  # Keep last 10 matches
+                    track.match_history = track.match_history[-10:]
+            else:
+                track_to_player[track.track_id] = (None, best_sim)
+                track.match_history.append((None, best_sim))
+                if len(track.match_history) > 10:
+                    track.match_history = track.match_history[-10:]
+
+        # Ensure one-to-one mapping: each player can only be assigned to one track
+        player_to_track: Dict[int, Tuple[int, float]] = {}  # player_id -> (track_id, similarity)
+
+        for track_id, (player_id, sim) in track_to_player.items():
+            if player_id is None:
+                continue
+
+            # If this player is already assigned to another track, keep the one with higher similarity
+            if player_id in player_to_track:
+                existing_track_id, existing_sim = player_to_track[player_id]
+                if sim > existing_sim:
+                    # This track has higher similarity, reassign
+                    track_to_player[existing_track_id] = (None, existing_sim)  # Clear previous track
+                    player_to_track[player_id] = (track_id, sim)
+                else:
+                    # Existing track has higher similarity, clear this track
+                    track_to_player[track_id] = (None, sim)
+            else:
+                player_to_track[player_id] = (track_id, sim)
+
+        # Build output with stable assignments using temporal voting
+        out: List[Dict[str, Any]] = []
+        for track in tracks:
+            pid, sim = track_to_player.get(track.track_id, (None, 0.0))
+
+            # Temporal voting: use majority vote from recent history for stability
+            if len(track.match_history) >= 3:
+                recent_matches = track.match_history[-5:]  # Last 5 frames
+                pid_counts: Dict[Optional[int], int] = {}
+                for match_pid, _ in recent_matches:
+                    pid_counts[match_pid] = pid_counts.get(match_pid, 0) + 1
+
+                # Use majority vote if it's strong enough
+                majority_pid = max(pid_counts.items(), key=lambda x: x[1])
+                if majority_pid[1] >= 3:  # At least 3 out of last 5 frames
+                    pid = majority_pid[0]
+
+            # Update track's stable player assignment
+            if pid == track.player_id:
+                track.stable_frames += 1
+            else:
+                track.player_id = pid
+                track.player_name = id_to_name.get(pid) if pid else None
+                track.stable_frames = 1
+
+            pname = track.player_name
+
+            out.append({"bbox": track.bbox, "id": pid, "name": pname, "sim": sim})
+
         return out
 
     # --- Overlay ---
