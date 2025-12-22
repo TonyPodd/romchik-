@@ -463,6 +463,19 @@ async def players_enroll(data: Dict[str, Any] = Body(None)):
     cv2.imwrite(os.path.join(thumbs_dir, f"{pid}.jpg"), crop)
 
     player = _players_add_safe(embedding=emb, thumb_rel=thumb_rel, name=name)
+    
+    # 🔥 Добавляем в CompreFace
+    try:
+        container = get_container()
+        compreface_manager = container.compreface_manager
+        
+        if compreface_manager and crop.size > 0:
+            print(f"[CompreFace] Добавляем игрока '{name}' в CompreFace (быстрая регистрация)...")
+            await compreface_manager.enroll_person_single(name, crop)
+            print(f"[CompreFace] ✅ Игрок '{name}' добавлен в CompreFace")
+    except Exception as e:
+        print(f"[CompreFace] ⚠️ Ошибка добавления в CompreFace: {e}")
+    
     return {"ok": True, "player": player}
 
 # --------------------------------------------------------------------------------------
@@ -697,6 +710,20 @@ async def enroll_finish(data: Dict[str, Any] = Body(None)):
                 # Don't fail enrollment if CompreFace fails - we still have local embeddings
 
         player = _players_add_safe(embedding=emb_list, thumb_rel=thumb_rel, name=name)
+        
+        # 🔥 Добавляем в CompreFace для лучшего распознавания
+        try:
+            container = get_container()
+            compreface_manager = container.compreface_manager
+            
+            if compreface_manager and thumb_img is not None and thumb_img.size > 0:
+                print(f"[CompreFace] Добавляем игрока '{name}' в CompreFace...")
+                await compreface_manager.enroll_person_single(name, thumb_img)
+                print(f"[CompreFace] ✅ Игрок '{name}' добавлен в CompreFace")
+        except Exception as e:
+            print(f"[CompreFace] ⚠️ Ошибка добавления в CompreFace: {e}")
+            # Продолжаем работу даже если CompreFace недоступен
+        
         _enroll = None
         return {"ok": True, "player": player}
 
@@ -706,6 +733,123 @@ async def enroll_cancel():
     async with _enroll_lock:
         _enroll = None
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------------------
+# Voice Enrollment API
+# --------------------------------------------------------------------------------------
+
+from fastapi import File, UploadFile, Form
+from infrastructure.audio.voice_enrollment import get_voice_service
+
+@app.post("/players/enroll/voice")
+async def enroll_voice(
+    player_id: int = Form(...),
+    audio_file: UploadFile = File(...)
+):
+    """
+    Регистрация голоса игрока
+    
+    Args:
+        player_id: ID игрока из БД
+        audio_file: WAV файл с записью голоса
+    
+    Returns:
+        {"ok": True, "voice_embedding": [...], "embedding_dim": 512}
+    """
+    try:
+        # Читаем аудио данные
+        audio_data = await audio_file.read()
+        
+        # Получаем voice service
+        voice_service = get_voice_service()
+        
+        if not voice_service._initialized:
+            return {
+                "ok": False,
+                "error": "voice_service_not_initialized",
+                "message": "Voice recognition model not loaded"
+            }
+        
+        # Создаем embedding
+        embedding = voice_service.create_embedding(audio_data)
+        
+        if embedding is None:
+            return {
+                "ok": False,
+                "error": "embedding_creation_failed",
+                "message": "Failed to create voice embedding"
+            }
+        
+        # Сохраняем голосовой образец
+        voice_path = voice_service.save_voice_sample(player_id, audio_data)
+        
+        # Обновляем игрока в БД с voice embedding
+        try:
+            player = P.get_player(player_id)
+            if player:
+                # Добавляем voice_embedding к существующим данным
+                P.update_player(
+                    player_id,
+                    voice_embedding=embedding.tolist(),
+                    voice_path=voice_path
+                )
+                
+                print(f"[Voice] ✅ Voice enrolled for player #{player_id}")
+                
+                return {
+                    "ok": True,
+                    "voice_embedding": embedding.tolist(),
+                    "embedding_dim": len(embedding),
+                    "voice_path": voice_path
+                }
+            else:
+                return {
+                    "ok": False,
+                    "error": "player_not_found",
+                    "message": f"Player #{player_id} not found"
+                }
+        except Exception as e:
+            print(f"[Voice] ⚠️  Error updating player: {e}")
+            # Все равно возвращаем успех, embedding создан
+            return {
+                "ok": True,
+                "voice_embedding": embedding.tolist(),
+                "embedding_dim": len(embedding),
+                "voice_path": voice_path,
+                "warning": "Player not updated in DB"
+            }
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "ok": False,
+            "error": "voice_enrollment_failed",
+            "message": str(e)
+        }
+
+
+@app.get("/players/{player_id}/voice")
+async def get_player_voice(player_id: int):
+    """Получить информацию о голосе игрока"""
+    try:
+        player = P.get_player(player_id)
+        if not player:
+            return {"ok": False, "error": "player_not_found"}
+        
+        voice_embedding = player.get("voice_embedding")
+        voice_path = player.get("voice_path")
+        
+        return {
+            "ok": True,
+            "has_voice": voice_embedding is not None,
+            "voice_path": voice_path,
+            "embedding_dim": len(voice_embedding) if voice_embedding else 0
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 
 def _players_with_rev():
     out = []

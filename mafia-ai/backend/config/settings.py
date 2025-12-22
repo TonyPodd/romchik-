@@ -27,9 +27,17 @@ class Settings(BaseSettings):
     camera_fps: int = Field(default=30, validation_alias="CAMERA_FPS")
 
     # Face Detection
-    face_detector_type: str = Field(default="yolov8", validation_alias="FACE_DETECTOR")  # yolov8, mediapipe
-    face_recognition_threshold: float = Field(default=0.4, validation_alias="FACE_THRESHOLD")
+    face_detector_type: str = Field(default="compreface", validation_alias="FACE_DETECTOR")  # compreface, yolov8, mediapipe
+    face_recognition_threshold: float = Field(default=0.85, validation_alias="FACE_THRESHOLD")
     face_model_path: Optional[str] = Field(default=None, validation_alias="FACE_MODEL_PATH")
+    
+    # CompreFace Settings
+    compreface_api_url: str = Field(default="http://localhost:8080", validation_alias="COMPREFACE_API_URL")
+    compreface_api_key: Optional[str] = Field(default=None, validation_alias="COMPREFACE_API_KEY")
+    compreface_recognition_key: Optional[str] = Field(default=None, validation_alias="COMPREFACE_RECOGNITION_KEY")
+    compreface_det_threshold: float = Field(default=0.8, validation_alias="COMPREFACE_DET_THRESHOLD")
+    compreface_limit: int = Field(default=10, validation_alias="COMPREFACE_LIMIT")
+    compreface_min_enrollment: int = Field(default=5, validation_alias="COMPREFACE_MIN_ENROLLMENT")
 
     # Gesture Detection
     gesture_detector_type: str = Field(default="hybrid", validation_alias="GESTURE_DETECTOR")  # hybrid, yolo, mediapipe

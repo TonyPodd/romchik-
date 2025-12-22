@@ -9,15 +9,21 @@ python-multipart==0.0.9
 opencv-python==4.10.0.84
 numpy==1.26.4
 ultralytics==8.3.0          # YOLOv8
-insightface==0.7.3          # ArcFace face recognition
+insightface==0.7.3          # ArcFace face recognition (legacy)
 onnxruntime==1.18.0         # ONNX runtime for models
 mediapipe==0.10.14          # MediaPipe (fallback & hands)
+compreface-sdk==1.2.0       # CompreFace face recognition API
+requests==2.31.0            # HTTP client for CompreFace API
 
 # Audio Processing
 silero-vad==5.1             # Voice Activity Detection
 faster-whisper==1.0.3       # Optimized Whisper ASR
 soundfile==0.12.1           # Audio I/O
 pyaudio==0.2.14             # Microphone capture (optional)
+pyannote.audio==3.1.1       # Speaker recognition & diarization
+speechbrain==0.5.16         # Speaker embeddings (used by pyannote)
+torch==2.2.0                # PyTorch for ML models
+torchaudio==2.2.0           # Audio processing for PyTorch
 
 # Game State Machine
 python-statemachine==2.3.0

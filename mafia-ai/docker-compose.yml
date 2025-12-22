@@ -1,4 +1,84 @@
 services:
+  # CompreFace - Face Recognition Service
+  compreface-postgres-db:
+    image: postgres:15.2-alpine
+    container_name: compreface-postgres-db
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=frs
+    volumes:
+      - compreface-db-data:/var/lib/postgresql/data
+    networks:
+      - mafia-network
+
+  compreface-admin:
+    image: exadel/compreface-admin:1.2.0
+    container_name: compreface-admin
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_URL=jdbc:postgresql://compreface-postgres-db:5432/frs
+      - SPRING_PROFILES_ACTIVE=dev
+      - ENABLE_EMAIL_SERVER=false
+      - EMAIL_HOST=smtp.gmail.com
+      - EMAIL_USERNAME=
+      - EMAIL_FROM=
+      - EMAIL_PASSWORD=
+      - ADMIN_JAVA_OPTS=-Xmx8g
+      - MAX_FILE_SIZE=5MB
+      - MAX_REQUEST_SIZE=10MB
+    depends_on:
+      - compreface-postgres-db
+    networks:
+      - mafia-network
+
+  compreface-api:
+    image: exadel/compreface-api:1.2.0
+    container_name: compreface-api
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - compreface-postgres-db
+      - compreface-admin
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_URL=jdbc:postgresql://compreface-postgres-db:5432/frs
+      - SPRING_PROFILES_ACTIVE=dev
+      - API_JAVA_OPTS=-Xmx8g
+    networks:
+      - mafia-network
+
+  compreface-fe:
+    image: exadel/compreface-fe:1.2.0
+    container_name: compreface-ui
+    restart: always
+    ports:
+      - "8001:80"
+    depends_on:
+      - compreface-api
+      - compreface-admin
+    environment:
+      - CLIENT_MAX_BODY_SIZE=10M
+      - PROXY_READ_TIMEOUT=300s
+      - PROXY_CONNECT_TIMEOUT=10s
+    networks:
+      - mafia-network
+
+  compreface-core:
+    image: exadel/compreface-core:1.2.0
+    container_name: compreface-core
+    restart: always
+    environment:
+      - ML_PORT=3000
+      - CORE_JAVA_OPTS=-Xmx8g
+    networks:
+      - mafia-network
+
   backend:
     image: python:3.11-slim
     working_dir: /app
@@ -7,3 +87,18 @@ services:
     command: bash -lc "pip install -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+    depends_on:
+      - compreface-api
+      - compreface-core
+    environment:
+      - COMPREFACE_API_URL=http://compreface-api:8080
+      - COMPREFACE_DOMAIN=http://compreface-api:8080
+    networks:
+      - mafia-network
+
+networks:
+  mafia-network:
+    driver: bridge
+
+volumes:
+  compreface-db-data:

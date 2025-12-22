@@ -56,3 +56,33 @@ def delete_player(pid: int) -> bool:
     if ok: _save(data)
     # миниатюру по желанию можно удалить
     return ok
+
+def get_player(pid: int) -> Optional[Dict[str, Any]]:
+    """Получить игрока по ID"""
+    data = _load()
+    for p in data["players"]:
+        if p["id"] == pid:
+            return p
+    return None
+
+def update_player(pid: int, **kwargs) -> bool:
+    """
+    Обновить данные игрока
+    
+    Args:
+        pid: ID игрока
+        **kwargs: Поля для обновления (voice_embedding, voice_path, etc.)
+    
+    Returns:
+        True если успешно обновлено
+    """
+    data = _load()
+    ok = False
+    for p in data["players"]:
+        if p["id"] == pid:
+            p.update(kwargs)
+            ok = True
+            break
+    if ok:
+        _save(data)
+    return ok

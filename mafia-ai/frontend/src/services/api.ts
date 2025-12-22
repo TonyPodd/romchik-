@@ -1,5 +1,5 @@
-const API_BASE = 'http://localhost:8000';
-const FETCH_TIMEOUT = 10000; // 10 seconds
+const API_BASE = 'http://127.0.0.1:8000';
+const FETCH_TIMEOUT = 30000; // 30 seconds (увеличено для CompreFace)
 
 // Helper function with timeout
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeout = FETCH_TIMEOUT): Promise<Response> {
@@ -151,5 +151,43 @@ export async function resetPlayers(): Promise<{ ok: boolean }> {
   const res = await fetchWithTimeout(`${API_BASE}/players/reset`, {
     method: 'POST',
   });
+  return res.json();
+}
+
+// Voice Enrollment
+
+export interface VoiceEnrollResponse {
+  ok: boolean;
+  voice_embedding?: number[];
+  embedding_dim?: number;
+  voice_path?: string;
+  error?: string;
+  message?: string;
+}
+
+export async function enrollVoice(playerId: number, audioBlob: Blob): Promise<VoiceEnrollResponse> {
+  const formData = new FormData();
+  formData.append('player_id', playerId.toString());
+  formData.append('audio_file', audioBlob, 'voice.wav');
+
+  const res = await fetchWithTimeout(
+    `${API_BASE}/players/enroll/voice`,
+    {
+      method: 'POST',
+      body: formData,
+    },
+    60000 // 60 seconds timeout for audio processing
+  );
+  return res.json();
+}
+
+export async function getPlayerVoice(playerId: number): Promise<{
+  ok: boolean;
+  has_voice?: boolean;
+  voice_path?: string;
+  embedding_dim?: number;
+  error?: string;
+}> {
+  const res = await fetchWithTimeout(`${API_BASE}/players/${playerId}/voice`);
   return res.json();
 }

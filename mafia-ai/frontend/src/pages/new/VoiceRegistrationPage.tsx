@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { GlassCard } from '../../components/ui/GlassCard';
 import { Button } from '../../components/ui/Button';
+import { enrollVoice, listPlayers } from '../../services/api';
 
 type Player = {
   id: number;
   name: string;
   registered: boolean;
+  hasVoice?: boolean;
 };
 
 export function VoiceRegistrationPage() {
@@ -15,50 +17,179 @@ export function VoiceRegistrationPage() {
   const playerCount = location.state?.playerCount || 10;
   const incomingPlayers = location.state?.players || [];
 
-  const [players, setPlayers] = useState<Player[]>(() =>
-    incomingPlayers.length > 0
-      ? incomingPlayers.map((p: Player) => ({ ...p, registered: false }))
-      : Array.from({ length: playerCount }, (_, i) => ({
-          id: i + 1,
-          name: `Игрок ${i + 1}`,
-          registered: false,
-        }))
-  );
+  const [players, setPlayers] = useState<Player[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingProgress, setRecordingProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const progressIntervalRef = useRef<number | null>(null);
 
   const currentPlayer = players[currentIndex];
   const allRegistered = players.every(p => p.registered);
 
-  const handleStartRecording = () => {
-    setIsRecording(true);
-    setRecordingProgress(0);
+  // Загрузка игроков из БД при монтировании
+  useEffect(() => {
+    loadPlayers();
+  }, []);
 
-    const interval = setInterval(() => {
-      setRecordingProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setPlayers(prev => prev.map((p, i) =>
-            i === currentIndex ? { ...p, registered: true } : p
-          ));
-          setIsRecording(false);
-          setRecordingProgress(0);
+  const loadPlayers = async () => {
+    try {
+      const response = await listPlayers();
+      if (response.players && response.players.length > 0) {
+        // Используем реальных игроков из БД
+        setPlayers(
+          response.players.map((p: any) => ({
+            id: p.id,
+            name: p.name || `Игрок ${p.id}`,
+            registered: false,
+            hasVoice: !!p.voice_embedding,
+          }))
+        );
+      } else {
+        // Fallback на моковые данные
+        setPlayers(
+          Array.from({ length: playerCount }, (_, i) => ({
+            id: i + 1,
+            name: `Игрок ${i + 1}`,
+            registered: false,
+          }))
+        );
+      }
+    } catch (err) {
+      console.error('[Voice] Failed to load players:', err);
+      setError('Не удалось загрузить список игроков');
+      // Fallback на моковые данные
+      setPlayers(
+        Array.from({ length: playerCount }, (_, i) => ({
+          id: i + 1,
+          name: `Игрок ${i + 1}`,
+          registered: false,
+        }))
+      );
+    }
+  };
 
-          if (currentIndex < players.length - 1) {
-            setTimeout(() => setCurrentIndex(currentIndex + 1), 300);
-          }
-          return 100;
-        }
-        return prev + 3.33; // 3 seconds recording
+  const handleStartRecording = async () => {
+    try {
+      setError(null);
+      
+      // Запрашиваем доступ к микрофону
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+        } 
       });
-    }, 100);
+
+      // Создаем MediaRecorder
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+      
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      // Собираем аудио данные
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      // Обработка окончания записи
+      mediaRecorder.onstop = async () => {
+        // Останавливаем все треки
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Создаем Blob из записанных данных
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        
+        // Конвертируем в WAV (требуется для backend)
+        await processAndUploadAudio(audioBlob);
+      };
+
+      // Запускаем запись
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingProgress(0);
+
+      // Прогресс бар (3 секунды записи)
+      const duration = 3000; // 3 секунды
+      const startTime = Date.now();
+      
+      progressIntervalRef.current = window.setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min((elapsed / duration) * 100, 100);
+        setRecordingProgress(progress);
+
+        if (progress >= 100) {
+          stopRecording();
+        }
+      }, 100);
+
+    } catch (err) {
+      console.error('[Voice] Error starting recording:', err);
+      setError('Не удалось получить доступ к микрофону');
+      setIsRecording(false);
+    }
+  };
+
+  const stopRecording = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+
+    setIsRecording(false);
+  };
+
+  const processAndUploadAudio = async (audioBlob: Blob) => {
+    try {
+      setError(null);
+      console.log('[Voice] Uploading audio for player:', currentPlayer.name);
+
+      // Отправляем на backend
+      const response = await enrollVoice(currentPlayer.id, audioBlob);
+
+      if (response.ok) {
+        console.log('[Voice] ✅ Voice enrolled successfully:', response);
+        
+        // Отмечаем игрока как зарегистрированного
+        setPlayers(prev => prev.map((p, i) =>
+          i === currentIndex ? { ...p, registered: true, hasVoice: true } : p
+        ));
+
+        // Переходим к следующему игроку
+        if (currentIndex < players.length - 1) {
+          setTimeout(() => {
+            setCurrentIndex(currentIndex + 1);
+            setRecordingProgress(0);
+          }, 300);
+        }
+      } else {
+        console.error('[Voice] Error:', response.error);
+        setError(response.message || 'Ошибка при регистрации голоса');
+      }
+    } catch (err) {
+      console.error('[Voice] Failed to upload audio:', err);
+      setError('Не удалось отправить аудио на сервер');
+    }
   };
 
   const handleSkip = () => {
     if (currentIndex < players.length - 1) {
       setCurrentIndex(currentIndex + 1);
       setRecordingProgress(0);
+      setError(null);
     }
   };
 
@@ -77,7 +208,7 @@ export function VoiceRegistrationPage() {
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.875rem' }}>
           <span style={{ color: '#94a3b8' }}>Регистрация голосов</span>
           <span style={{ color: '#e2e8f0', fontWeight: 600 }}>
-            {players.filter(p => p.registered).length} / {playerCount}
+            {players.filter(p => p.registered).length} / {players.length}
           </span>
         </div>
         <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.08)', borderRadius: '3px' }}>
@@ -85,11 +216,26 @@ export function VoiceRegistrationPage() {
             height: '100%',
             background: '#4f46e5',
             borderRadius: '3px',
-            width: `${(players.filter(p => p.registered).length / playerCount) * 100}%`,
+            width: `${(players.filter(p => p.registered).length / players.length) * 100}%`,
             transition: 'width 0.3s ease',
           }} />
         </div>
       </div>
+
+      {/* Error Message */}
+      {error && (
+        <div style={{
+          background: 'rgba(239,68,68,0.1)',
+          border: '1px solid rgba(239,68,68,0.3)',
+          color: '#ef4444',
+          padding: '1rem',
+          borderRadius: '8px',
+          maxWidth: '800px',
+          width: '100%',
+        }}>
+          ⚠️ {error}
+        </div>
+      )}
 
       {/* Main */}
       <div style={{
@@ -102,7 +248,7 @@ export function VoiceRegistrationPage() {
         {/* Recorder */}
         <GlassCard style={{ padding: '2rem' }}>
           <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1.5rem' }}>
-            {currentPlayer.name}
+            {currentPlayer?.name || 'Загрузка...'}
           </h2>
 
           <p style={{
@@ -110,7 +256,7 @@ export function VoiceRegistrationPage() {
             marginBottom: '1.5rem',
             fontSize: '0.9375rem',
           }}>
-            Произнесите: "Я {currentPlayer.name}, игрок номер {currentPlayer.id}"
+            Произнесите: "Я {currentPlayer?.name}, игрок номер {currentPlayer?.id}"
           </p>
 
           {/* Microphone area */}
@@ -161,10 +307,10 @@ export function VoiceRegistrationPage() {
                 </div>
               </div>
             )}
-            {!isRecording && currentPlayer.registered && (
+            {!isRecording && currentPlayer?.registered && (
               <div style={{ fontSize: '4rem', color: '#10b981' }}>✓</div>
             )}
-            {!isRecording && !currentPlayer.registered && (
+            {!isRecording && currentPlayer && !currentPlayer.registered && (
               <div style={{
                 width: '80px',
                 height: '80px',
@@ -184,7 +330,7 @@ export function VoiceRegistrationPage() {
             )}
           </div>
 
-          {!currentPlayer.registered && (
+          {currentPlayer && !currentPlayer.registered && (
             <div style={{ display: 'flex', gap: '1rem' }}>
               <Button variant="secondary" onClick={handleSkip} style={{ flex: 1 }} disabled={isRecording}>
                 Пропустить
