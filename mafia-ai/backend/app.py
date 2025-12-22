@@ -204,14 +204,14 @@ async def video_start(
     table_y_ratio: Optional[float] = None,
 ):
     """
-    POST /video/start?camera_index=0&fps=24&table_y_ratio=0.8
+    POST /video/start?camera_index=0&fps=30&table_y_ratio=0.8
     """
     global _stream
     if _stream:
         return {"ok": True, "status": "already_running"}
 
     cam = int(os.getenv("CAMERA_INDEX", "0")) if camera_index is None else int(camera_index)
-    f = int(os.getenv("GESTURE_FPS", "24")) if fps is None else int(fps)  # 24fps for better CPU performance
+    f = int(os.getenv("GESTURE_FPS", "30")) if fps is None else int(fps)  # 30fps for smooth rendering
     tyr = float(os.getenv("TABLE_Y_RATIO", "0.80")) if table_y_ratio is None else float(table_y_ratio)
 
     _stream = GestureStream(on_event=ws_broadcast, camera_index=cam, fps=f, table_y_ratio=tyr)
@@ -467,11 +467,11 @@ async def players_enroll(data: Dict[str, Any] = Body(None)):
 async def enroll_start(data: Dict[str, Any] = Body(None)):
     """
     Начать сессию энролла.
-    body: { "name": string (optional), "target": int (optional, default 12) }
+    body: { "name": string (optional), "target": int (optional, default 24) }
     """
     global _enroll
     name = (data or {}).get("name", "")
-    target = int((data or {}).get("target", 12))  # Balanced: enough for quality, fast enough
+    target = int((data or {}).get("target", 24))  # More samples for better accuracy and angle coverage
     _enroll = {
         "id": int(time.time() * 1000),
         "name": name,
@@ -589,16 +589,16 @@ async def enroll_snap():
         elif pitch < -4:  # Lowered from -6 to -4
             _enroll["pitch_down"] += 1
 
-    # Умные подсказки на основе недостающих ракурсов - balanced for speed
-    if _enroll["front"] < 3:  # Need frontal samples first
+    # Умные подсказки на основе недостающих ракурсов - comprehensive coverage
+    if _enroll["front"] < 6:  # More frontal samples for primary recognition
         _enroll["hint"] = "Смотрите прямо в камеру"
-    elif _enroll["yaw_left"] < 2:  # Left turn
+    elif _enroll["yaw_left"] < 4:  # More left turn samples
         _enroll["hint"] = "Поверните голову немного влево"
-    elif _enroll["yaw_right"] < 2:  # Right turn
+    elif _enroll["yaw_right"] < 4:  # More right turn samples
         _enroll["hint"] = "Поверните голову немного вправо"
-    elif _enroll["pitch_up"] < 2:  # Up angle
+    elif _enroll["pitch_up"] < 3:  # Up angle
         _enroll["hint"] = "Поднимите голову чуть выше"
-    elif _enroll["pitch_down"] < 2:  # Down angle
+    elif _enroll["pitch_down"] < 3:  # Down angle
         _enroll["hint"] = "Опустите голову чуть ниже"
     else:
         _enroll["hint"] = "Отлично! Продолжайте"
@@ -621,8 +621,8 @@ async def enroll_finish(data: Dict[str, Any] = Body(None)):
         name = name_override if (isinstance(name_override, str) and name_override.strip()) else _enroll["name"]
 
         samples: List[np.ndarray] = _enroll["samples"]
-        if len(samples) < 5:
-            return {"ok": False, "error": f"need_more_samples ({len(samples)}/5)"}
+        if len(samples) < 10:
+            return {"ok": False, "error": f"need_more_samples ({len(samples)}/10)"}
 
         # Normalize each sample first
         normalized_samples = []
@@ -634,13 +634,13 @@ async def enroll_finish(data: Dict[str, Any] = Body(None)):
                 normalized_samples.append(s)
 
         # Remove outliers: compute pairwise similarities and remove samples with low avg similarity
-        if len(normalized_samples) >= 8:
+        if len(normalized_samples) >= 12:
             stack = np.stack(normalized_samples, axis=0)
             similarities = stack @ stack.T  # cosine similarity matrix
             avg_sims = similarities.mean(axis=1)
             threshold = avg_sims.mean() - 0.5 * avg_sims.std()
             filtered = [normalized_samples[i] for i in range(len(normalized_samples)) if avg_sims[i] >= threshold]
-            if len(filtered) >= 5:
+            if len(filtered) >= 10:
                 normalized_samples = filtered
 
         # Average and normalize again
