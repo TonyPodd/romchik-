@@ -64,14 +64,14 @@ def _point_in_poly(px: Tuple[int, int], poly: np.ndarray) -> bool:
 # ---------------- Face identification backends ----------------
 
 class _FaceBackendBase:
-    sim_threshold: float = 0.52  # Increased from 0.38 for better accuracy
+    sim_threshold: float = 0.60  # Higher threshold for better person differentiation
     def analyze(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
 
 class _FaceBackendONNX(_FaceBackendBase):
     """ArcFace ONNX + MediaPipe FaceDetection для bbox."""
-    def __init__(self, sim_threshold: float = 0.52):  # Increased from 0.38
+    def __init__(self, sim_threshold: float = 0.60):  # Higher threshold for better accuracy
         import onnxruntime as ort
         import mediapipe as mp
         from pathlib import Path
@@ -185,7 +185,7 @@ class GestureStream:
         on_event: EventCallback,
         camera_index: int = 0,
         table_y_ratio: float = 0.80,
-        fps: int = 30,
+        fps: int = 30,  # Higher FPS for smooth bounding box rendering
         width: int = 1280,
         height: int = 720,
     ):
@@ -256,7 +256,7 @@ class GestureStream:
             if frame.size and float(frame.mean()) > 1.0:
                 async with self._frame_lock:
                     self._last_frame = frame.copy()
-                ok2, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                ok2, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
                 if ok2:
                     async with self._jpeg_lock:
                         self._last_jpeg = buf.tobytes()
@@ -561,6 +561,7 @@ class GestureStream:
     # --- JPEG ---
 
     async def _encode_jpeg(self, frame: np.ndarray) -> bytes:
+        # Higher quality for better visual accuracy (75 for good balance)
         ok, buf = await asyncio.to_thread(cv2.imencode, ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
         return buf.tobytes() if ok else b""
 
@@ -618,8 +619,10 @@ class GestureStream:
                     jpeg = await self._encode_jpeg(table_only)
 
                 else:  # RENDER_FULL
-                    # жесты + лица
+                    # жесты + лица (real-time detection every frame for accuracy)
                     res = await asyncio.to_thread(self._det.process_frame, frame)
+
+                    # Run face detection on EVERY frame for accurate bounding boxes
                     faces = await asyncio.to_thread(self._safe_face_analyze, frame)
                     matches = self._match_faces(faces)
 
