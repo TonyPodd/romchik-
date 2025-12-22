@@ -64,14 +64,14 @@ def _point_in_poly(px: Tuple[int, int], poly: np.ndarray) -> bool:
 # ---------------- Face identification backends ----------------
 
 class _FaceBackendBase:
-    sim_threshold: float = 0.52  # Increased from 0.38 for better accuracy
+    sim_threshold: float = 0.60  # Higher threshold for better person differentiation
     def analyze(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
 
 class _FaceBackendONNX(_FaceBackendBase):
     """ArcFace ONNX + MediaPipe FaceDetection для bbox."""
-    def __init__(self, sim_threshold: float = 0.52):  # Increased from 0.38
+    def __init__(self, sim_threshold: float = 0.60):  # Higher threshold for better accuracy
         import onnxruntime as ort
         import mediapipe as mp
         from pathlib import Path

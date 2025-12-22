@@ -467,11 +467,11 @@ async def players_enroll(data: Dict[str, Any] = Body(None)):
 async def enroll_start(data: Dict[str, Any] = Body(None)):
     """
     Начать сессию энролла.
-    body: { "name": string (optional), "target": int (optional, default 20) }
+    body: { "name": string (optional), "target": int (optional, default 12) }
     """
     global _enroll
     name = (data or {}).get("name", "")
-    target = int((data or {}).get("target", 20))  # Increased from 12 to 20 for better coverage
+    target = int((data or {}).get("target", 12))  # Balanced: enough for quality, fast enough
     _enroll = {
         "id": int(time.time() * 1000),
         "name": name,
@@ -545,8 +545,8 @@ async def enroll_snap():
     since_add = now - float(_enroll.get("last_add", 0.0))
 
     # пороги
-    QUALITY_THR = 0.33        # чуть мягче
-    DIVERSE_MAX_SIM = 0.92    # допускаем больше похожих
+    QUALITY_THR = 0.45        # Higher quality samples for better recognition
+    DIVERSE_MAX_SIM = 0.88    # More diverse samples for robustness
 
     # проверка качества
     if q < QUALITY_THR and since_add < 1.6:
@@ -589,16 +589,16 @@ async def enroll_snap():
         elif pitch < -4:  # Lowered from -6 to -4
             _enroll["pitch_down"] += 1
 
-    # Умные подсказки на основе недостающих ракурсов - increased requirements
-    if _enroll["front"] < 4:  # Increased from 2 to 4
+    # Умные подсказки на основе недостающих ракурсов - balanced for speed
+    if _enroll["front"] < 3:  # Need frontal samples first
         _enroll["hint"] = "Смотрите прямо в камеру"
-    elif _enroll["yaw_left"] < 3:  # Increased from 2 to 3
+    elif _enroll["yaw_left"] < 2:  # Left turn
         _enroll["hint"] = "Поверните голову немного влево"
-    elif _enroll["yaw_right"] < 3:  # Increased from 2 to 3
+    elif _enroll["yaw_right"] < 2:  # Right turn
         _enroll["hint"] = "Поверните голову немного вправо"
-    elif _enroll["pitch_up"] < 3:  # Increased from 2 to 3
+    elif _enroll["pitch_up"] < 2:  # Up angle
         _enroll["hint"] = "Поднимите голову чуть выше"
-    elif _enroll["pitch_down"] < 3:  # Increased from 2 to 3
+    elif _enroll["pitch_down"] < 2:  # Down angle
         _enroll["hint"] = "Опустите голову чуть ниже"
     else:
         _enroll["hint"] = "Отлично! Продолжайте"
@@ -621,10 +621,30 @@ async def enroll_finish(data: Dict[str, Any] = Body(None)):
         name = name_override if (isinstance(name_override, str) and name_override.strip()) else _enroll["name"]
 
         samples: List[np.ndarray] = _enroll["samples"]
-        if len(samples) < 6:
-            return {"ok": False, "error": f"need_more_samples ({len(samples)}/6)"}
+        if len(samples) < 5:
+            return {"ok": False, "error": f"need_more_samples ({len(samples)}/5)"}
 
-        mean = np.mean(np.stack(samples, axis=0), axis=0).astype(np.float32)
+        # Normalize each sample first
+        normalized_samples = []
+        for s in samples:
+            norm = np.linalg.norm(s)
+            if norm > 1e-6:
+                normalized_samples.append(s / norm)
+            else:
+                normalized_samples.append(s)
+
+        # Remove outliers: compute pairwise similarities and remove samples with low avg similarity
+        if len(normalized_samples) >= 8:
+            stack = np.stack(normalized_samples, axis=0)
+            similarities = stack @ stack.T  # cosine similarity matrix
+            avg_sims = similarities.mean(axis=1)
+            threshold = avg_sims.mean() - 0.5 * avg_sims.std()
+            filtered = [normalized_samples[i] for i in range(len(normalized_samples)) if avg_sims[i] >= threshold]
+            if len(filtered) >= 5:
+                normalized_samples = filtered
+
+        # Average and normalize again
+        mean = np.mean(np.stack(normalized_samples, axis=0), axis=0).astype(np.float32)
         mean = mean / (np.linalg.norm(mean) + 1e-6)
         emb_list = mean.astype(float).tolist()
 
