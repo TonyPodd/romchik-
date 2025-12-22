@@ -17,6 +17,12 @@ from starlette.responses import StreamingResponse
 from video.stream_worker import GestureStream
 from storage import players as P
 
+try:
+    from video.compreface import CompreFaceClient
+    COMPREFACE_AVAILABLE = True
+except ImportError:
+    COMPREFACE_AVAILABLE = False
+
 # Новая архитектура
 from api.routers import game as game_router
 from application.services import get_container
@@ -476,7 +482,8 @@ async def enroll_start(data: Dict[str, Any] = Body(None)):
         "id": int(time.time() * 1000),
         "name": name,
         "target": target,
-        "samples": [],       # List[np.ndarray]
+        "samples": [],       # List[np.ndarray] - embeddings
+        "crops": [],         # List[np.ndarray] - face crops for CompreFace
         "thumb": None,       # np.ndarray (BGR)
         "last_add": 0.0,     # время последнего успешного ДОБАВЛЕНИЯ
         "last_snap": 0.0,    # время последнего СНИМКA (для антиспама)
@@ -557,6 +564,7 @@ async def enroll_snap():
         # если давно не добавляли — форсируем добавление похожего
         if since_add >= 1.2 or count == 0:
             _enroll["samples"].append(emb)
+            _enroll["crops"].append(crop.copy())  # Save crop for CompreFace
             if _enroll["thumb"] is None:
                 _enroll["thumb"] = crop.copy()
             _enroll["last_add"] = now
@@ -567,6 +575,7 @@ async def enroll_snap():
 
     # нормальная успешная добавка
     _enroll["samples"].append(emb)
+    _enroll["crops"].append(crop.copy())  # Save crop for CompreFace
     if _enroll["thumb"] is None:
         _enroll["thumb"] = crop.copy()
     _enroll["last_add"] = now
@@ -612,7 +621,7 @@ async def enroll_step():
 
 @app.post("/players/enroll/finish")
 async def enroll_finish(data: Dict[str, Any] = Body(None)):
-    """Финал: усреднить эмбеддинги и сохранить игрока в БД."""
+    """Финал: усреднить эмбеддинги и сохранить игрока в БД (+ CompreFace если включен)."""
     global _enroll
     async with _enroll_lock:
         if not _enroll:
@@ -656,6 +665,36 @@ async def enroll_finish(data: Dict[str, Any] = Body(None)):
         if thumb_img is None:
             thumb_img = np.zeros((120, 120, 3), dtype=np.uint8)
         cv2.imwrite(os.path.join(thumbs_dir, f"{pid}.jpg"), thumb_img)
+
+        # If CompreFace is enabled, register all samples with CompreFace
+        if os.getenv("COMPREFACE_ENABLED", "false").lower() == "true" and COMPREFACE_AVAILABLE:
+            try:
+                # Get frame crops from _enroll session if available
+                crops = _enroll.get("crops", [])
+                if crops and thumb_img is not None:
+                    client = CompreFaceClient(
+                        base_url=os.getenv("COMPREFACE_URL", "http://localhost:8001"),
+                        recognition_api_key=os.getenv("COMPREFACE_API_KEY", "")
+                    )
+
+                    # Register multiple samples with CompreFace for better recognition
+                    # Use a subset of crops to avoid overwhelming the service
+                    sample_indices = list(range(0, len(crops), max(1, len(crops) // 10)))[:10]
+                    for idx in sample_indices:
+                        try:
+                            result = await client.add_face(
+                                subject=name,
+                                image_bgr=crops[idx],
+                                det_prob_threshold=0.8
+                            )
+                            print(f"[compreface] Added sample {idx} for {name}: {result}")
+                        except Exception as e:
+                            print(f"[compreface] Failed to add sample {idx}: {e}")
+
+                    print(f"[compreface] Registered player {name} with {len(sample_indices)} samples")
+            except Exception as e:
+                print(f"[compreface] Failed to register player with CompreFace: {e}")
+                # Don't fail enrollment if CompreFace fails - we still have local embeddings
 
         player = _players_add_safe(embedding=emb_list, thumb_rel=thumb_rel, name=name)
         _enroll = None

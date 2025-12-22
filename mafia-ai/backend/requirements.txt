@@ -25,6 +25,7 @@ python-statemachine==2.3.0
 # Utilities
 python-dotenv==1.0.0        # .env files
 aiofiles==24.1.0            # Async file operations
+httpx==0.27.0               # HTTP client for CompreFace API
 
 # Image Processing
 Pillow==10.4.0

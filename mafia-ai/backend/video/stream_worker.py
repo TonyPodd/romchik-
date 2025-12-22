@@ -13,6 +13,13 @@ import numpy as np
 from video.gestures import GestureDetector
 from storage import players as P
 
+try:
+    from video.compreface import CompreFaceClient, parse_compreface_result
+    COMPREFACE_AVAILABLE = True
+except ImportError:
+    COMPREFACE_AVAILABLE = False
+    print("[compreface] Not available - install httpx to use CompreFace")
+
 EventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
 # ---------- Render modes ----------
@@ -164,11 +171,76 @@ class _FaceBackendLandmarks(_FaceBackendBase):
         return out
 
 
+class _FaceBackendCompreFace(_FaceBackendBase):
+    """CompreFace REST API backend - professional face recognition service."""
+    def __init__(self, sim_threshold: float = 0.70):
+        if not COMPREFACE_AVAILABLE:
+            raise ImportError("CompreFace requires httpx: pip install httpx")
+
+        self.sim_threshold = sim_threshold
+        self.client = CompreFaceClient(
+            base_url=os.getenv("COMPREFACE_URL", "http://localhost:8001"),
+            recognition_api_key=os.getenv("COMPREFACE_API_KEY", "")
+        )
+        self.loop = None
+        print(f"[compreface] initialized with URL={self.client.base_url}")
+
+    def analyze(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
+        """
+        Note: This method is synchronous but CompreFace client is async.
+        We'll use a workaround to run async code in sync context.
+        """
+        # Get or create event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        # Run async recognize in sync context
+        result = loop.run_until_complete(
+            self.client.recognize_face(
+                frame_bgr,
+                det_prob_threshold=0.8,
+                limit=10,  # max 10 faces
+                prediction_count=1
+            )
+        )
+
+        # Parse CompreFace result to our format
+        faces = parse_compreface_result(result)
+
+        # Filter by similarity threshold and convert to expected format with embeddings
+        # Note: CompreFace doesn't return embeddings, but we don't need them for matching
+        # since CompreFace handles matching internally
+        out = []
+        for face in faces:
+            if face.get("sim", 0.0) >= self.sim_threshold:
+                # Add a dummy embedding (not used but expected by tracking code)
+                face["embedding"] = np.zeros(512, dtype=np.float32)
+                out.append(face)
+
+        return out
+
+
 def _make_face_backend_initial() -> _FaceBackendBase:
     use = (os.getenv("FACE_BACKEND") or "AUTO").upper()
+
+    # Check if CompreFace is enabled
+    if os.getenv("COMPREFACE_ENABLED", "false").lower() == "true" or use == "COMPREFACE":
+        if COMPREFACE_AVAILABLE:
+            try:
+                print("[face] using COMPREFACE backend")
+                return _FaceBackendCompreFace(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.70")))
+            except Exception as e:
+                print(f"[face] COMPREFACE init failed: {e}. Falling back to ONNX.")
+        else:
+            print("[face] COMPREFACE requested but not available. Falling back to ONNX.")
+
     if use == "LANDMARKS":
         print("[face] using LANDMARKS backend")
         return _FaceBackendLandmarks(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.85")))
+
     print("[face] using ONNX backend (auto-fallback enabled)")
     try:
         return _FaceBackendONNX(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.52")))
