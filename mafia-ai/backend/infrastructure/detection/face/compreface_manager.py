@@ -367,3 +367,6 @@ class CompreFaceManager:
         if person_name in self.enrollment_quality:
             del self.enrollment_quality[person_name]
 
+
+
+

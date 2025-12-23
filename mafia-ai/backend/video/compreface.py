@@ -187,7 +187,13 @@ def parse_compreface_result(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     Returns:
         List of detected faces with bboxes and player info
     """
+    from storage import players as P
+    
     faces = []
+    
+    # Получаем список всех игроков для сопоставления имени с ID
+    registered_players = P.list_players()
+    name_to_id: Dict[str, int] = {p.get("name", ""): p["id"] for p in registered_players if p.get("name")}
 
     for detection in result.get("result", []):
         box = detection.get("box", {})
@@ -207,15 +213,23 @@ def parse_compreface_result(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             player_name = best_match.get("subject")
             similarity = best_match.get("similarity", 0.0)
 
-            # Try to parse player_id from subject name if it follows pattern "name_id"
-            # Otherwise use name as ID
-            player_id = player_name
+            # Сопоставляем имя (subject) с player_id из локальной БД
+            if player_name and player_name in name_to_id:
+                player_id = name_to_id[player_name]
+            elif player_name:
+                # Если имя не найдено, пытаемся найти по частичному совпадению
+                for name, pid in name_to_id.items():
+                    if name and player_name and (name.lower() == player_name.lower() or name.lower() in player_name.lower() or player_name.lower() in name.lower()):
+                        player_id = pid
+                        player_name = name  # Используем правильное имя из БД
+                        break
 
         faces.append({
             "bbox": (x_min, y_min, x_max, y_max),
             "id": player_id,
             "name": player_name,
-            "sim": similarity
+            "sim": similarity,
+            "compreface_recognized": player_id is not None  # Флаг что лицо распознано CompreFace
         })
 
     return faces

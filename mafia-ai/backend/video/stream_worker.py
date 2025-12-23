@@ -178,9 +178,10 @@ class _FaceBackendCompreFace(_FaceBackendBase):
             raise ImportError("CompreFace requires httpx: pip install httpx")
 
         self.sim_threshold = sim_threshold
+        # CompreFace API находится на порту 8080, UI на 8001
         self.client = CompreFaceClient(
-            base_url=os.getenv("COMPREFACE_URL", "http://localhost:8001"),
-            recognition_api_key=os.getenv("COMPREFACE_API_KEY", "")
+            base_url=os.getenv("COMPREFACE_URL", "http://localhost:8080"),
+            recognition_api_key=os.getenv("COMPREFACE_RECOGNITION_KEY", os.getenv("COMPREFACE_API_KEY", ""))
         )
         self.loop = None
         print(f"[compreface] initialized with URL={self.client.base_url}")
@@ -215,7 +216,9 @@ class _FaceBackendCompreFace(_FaceBackendBase):
         # since CompreFace handles matching internally
         out = []
         for face in faces:
-            if face.get("sim", 0.0) >= self.sim_threshold:
+            # Если лицо распознано CompreFace, используем его даже если similarity ниже порога
+            # (порог применяется только для нераспознанных лиц)
+            if face.get("compreface_recognized", False) or face.get("sim", 0.0) >= self.sim_threshold:
                 # Add a dummy embedding (not used but expected by tracking code)
                 face["embedding"] = np.zeros(512, dtype=np.float32)
                 out.append(face)
@@ -601,6 +604,9 @@ class GestureStream:
         """
         Match detected faces to registered players using temporal tracking.
         Returns list of matched faces with stable player assignments.
+        
+        Если используется CompreFace и лица уже распознаны (compreface_recognized=True),
+        используем эту информацию напрямую вместо сопоставления по эмбеддингам.
         """
         reg = P.list_players()
 
@@ -611,45 +617,88 @@ class GestureStream:
             # No registered players - return unidentified faces
             return [{"bbox": t.bbox, "id": None, "name": None, "sim": 0.0} for t in tracks]
 
-        # Prepare player embeddings
+        # Проверяем, используется ли CompreFace и есть ли уже распознанные лица
+        compreface_used = any(face.get("compreface_recognized", False) for face in faces)
+        
+        # Prepare player info
         player_ids = []
         player_embeddings = []
         id_to_name: Dict[int, str] = {}
 
         for p in reg:
-            emb = np.array(p["embedding"], dtype=np.float32)
-            emb_norm = emb / (np.linalg.norm(emb) + 1e-6)
             player_ids.append(p["id"])
-            player_embeddings.append(emb_norm)
             id_to_name[p["id"]] = p.get("name", f"Player {p['id']}")
-
-        player_embeddings_matrix = np.stack(player_embeddings, axis=0)  # shape: (num_players, emb_dim)
+            # Эмбеддинги нужны только если не используется CompreFace
+            if not compreface_used:
+                emb = np.array(p["embedding"], dtype=np.float32)
+                emb_norm = emb / (np.linalg.norm(emb) + 1e-6)
+                player_embeddings.append(emb_norm)
 
         # Match each track to players
         track_to_player: Dict[int, Tuple[Optional[int], float]] = {}  # track_id -> (player_id, similarity)
 
+        # Создаем маппинг detection -> track для использования информации от CompreFace
+        detection_to_track: Dict[int, Dict[str, Any]] = {}  # track_id -> face detection info
+        
+        # Находим соответствующие detections для каждого track
         for track in tracks:
-            # Normalize track embedding
-            emb_norm = track.embedding / (np.linalg.norm(track.embedding) + 1e-6)
+            # Ищем detection с максимальным IoU
+            best_detection = None
+            best_iou = 0.0
+            
+            for face in faces:
+                det_bbox = face["bbox"]
+                iou = FaceTracker._iou(det_bbox, track.bbox)
+                if iou > best_iou and iou > 0.3:  # Минимальный IoU для сопоставления
+                    best_iou = iou
+                    best_detection = face
+            
+            if best_detection:
+                detection_to_track[track.track_id] = best_detection
 
-            # Compute similarities to all players
-            sims = player_embeddings_matrix @ emb_norm  # shape: (num_players,)
+        for track in tracks:
+            # Если используется CompreFace и лицо уже распознано, используем эту информацию
+            if compreface_used and track.track_id in detection_to_track:
+                detection = detection_to_track[track.track_id]
+                if detection.get("compreface_recognized", False) and detection.get("id") is not None:
+                    player_id = detection.get("id")
+                    similarity = detection.get("sim", 0.0)
+                    track_to_player[track.track_id] = (player_id, similarity)
+                    track.match_history.append((player_id, similarity))
+                    if len(track.match_history) > 10:
+                        track.match_history = track.match_history[-10:]
+                    continue
+            
+            # Иначе используем сопоставление по эмбеддингам (fallback)
+            if player_embeddings:
+                # Normalize track embedding
+                emb_norm = track.embedding / (np.linalg.norm(track.embedding) + 1e-6)
+                player_embeddings_matrix = np.stack(player_embeddings, axis=0)
+                
+                # Compute similarities to all players
+                sims = player_embeddings_matrix @ emb_norm  # shape: (num_players,)
 
-            best_idx = int(np.argmax(sims))
-            best_sim = float(sims[best_idx])
+                best_idx = int(np.argmax(sims))
+                best_sim = float(sims[best_idx])
 
-            # Use lower threshold for initial match, rely on tracking for stability
-            if best_sim >= 0.35:  # Lower threshold, tracking provides stability
-                candidate_player_id = player_ids[best_idx]
-                track_to_player[track.track_id] = (candidate_player_id, best_sim)
+                # Use lower threshold for initial match, rely on tracking for stability
+                if best_sim >= 0.35:  # Lower threshold, tracking provides stability
+                    candidate_player_id = player_ids[best_idx]
+                    track_to_player[track.track_id] = (candidate_player_id, best_sim)
 
-                # Update track's match history for temporal smoothing
-                track.match_history.append((candidate_player_id, best_sim))
-                if len(track.match_history) > 10:  # Keep last 10 matches
-                    track.match_history = track.match_history[-10:]
+                    # Update track's match history for temporal smoothing
+                    track.match_history.append((candidate_player_id, best_sim))
+                    if len(track.match_history) > 10:  # Keep last 10 matches
+                        track.match_history = track.match_history[-10:]
+                else:
+                    track_to_player[track.track_id] = (None, best_sim)
+                    track.match_history.append((None, best_sim))
+                    if len(track.match_history) > 10:
+                        track.match_history = track.match_history[-10:]
             else:
-                track_to_player[track.track_id] = (None, best_sim)
-                track.match_history.append((None, best_sim))
+                # Нет эмбеддингов - не можем сопоставить
+                track_to_player[track.track_id] = (None, 0.0)
+                track.match_history.append((None, 0.0))
                 if len(track.match_history) > 10:
                     track.match_history = track.match_history[-10:]
 
