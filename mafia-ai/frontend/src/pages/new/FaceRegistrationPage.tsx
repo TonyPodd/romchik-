@@ -440,12 +440,22 @@ export function FaceRegistrationPage() {
               </div>
               <div className="face-reg__slot-list">
                 {players.map((player, index) => (
-                  <button
-                    type="button"
+                  <div
                     key={player.id}
                     className={`face-reg__slot-item ${index === currentIndex ? 'is-active' : ''} ${player.registered ? 'is-filled' : ''}`.trim()}
+                    role="button"
+                    tabIndex={scanState === 'scanning' ? -1 : 0}
                     onClick={() => {
                       if (scanState !== 'scanning') {
+                        setCurrentIndex(index);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (scanState === 'scanning') {
+                        return;
+                      }
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
                         setCurrentIndex(index);
                       }
                     }}
@@ -481,7 +491,7 @@ export function FaceRegistrationPage() {
                         Сброс
                       </Button>
                     )}
-                  </button>
+                  </div>
                 ))}
               </div>
             </GlassCard>

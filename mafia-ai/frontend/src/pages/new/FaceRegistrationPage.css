@@ -87,6 +87,12 @@
   text-align: left;
   transition: border-color 0.16s ease, background 0.16s ease;
   backdrop-filter: blur(5px);
+  cursor: pointer;
+}
+
+.face-reg__slot-item:focus-visible {
+  outline: 2px solid rgba(126, 245, 182, 0.5);
+  outline-offset: 2px;
 }
 
 .face-reg__slot-item.is-active {

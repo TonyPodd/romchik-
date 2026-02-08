@@ -262,20 +262,41 @@ export async function voiceTestIdentify(
   audio: number[],
   sampleRate: number = 16000,
 ): Promise<VoiceTestIdentifyResponse> {
-  const res = await fetchWithTimeout(
-    `${API_BASE}/voice/test/identify`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/voice/test/identify`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expected_player_id: expectedPlayerId,
+          audio,
+          sample_rate: sampleRate,
+        }),
+      },
+      20000,
+    );
+    return res.json();
+  } catch (error: any) {
+    // Совместимость со старым backend, где тестовый роут еще не добавлен.
+    const message = String(error?.message || '');
+    if (message.includes('HTTP 404')) {
+      const fallback = await voiceIdentify(audio, sampleRate);
+      const predictedId = fallback.player_id ?? null;
+      return {
+        ok: Boolean(fallback.ok),
+        correct: predictedId === expectedPlayerId,
         expected_player_id: expectedPlayerId,
-        audio,
-        sample_rate: sampleRate,
-      }),
-    },
-    20000,
-  );
-  return res.json();
+        expected_player_name: null,
+        predicted_player_id: predictedId,
+        predicted_player_name: fallback.player_name ?? null,
+        confidence: Number(fallback.confidence || 0),
+        top_matches: [],
+        error: fallback.error,
+      };
+    }
+    throw error;
+  }
 }
 
 export async function voiceListProfiles(): Promise<{ ok: boolean; profiles: VoiceProfile[]; error?: string }> {
