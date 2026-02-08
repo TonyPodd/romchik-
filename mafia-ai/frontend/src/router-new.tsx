@@ -23,6 +23,10 @@ export const routerNew = createBrowserRouter([
     element: <VoiceRegistrationPage />,
   },
   {
+    path: "/setup/voice",
+    element: <VoiceRegistrationPage />,
+  },
+  {
     path: "/setup/table-detection",
     element: <TableDetectionPage />,
   },

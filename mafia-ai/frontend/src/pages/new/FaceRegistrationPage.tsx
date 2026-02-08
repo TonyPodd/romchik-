@@ -1,92 +1,270 @@
-import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { GlassCard } from '../../components/ui/GlassCard';
-import { Button } from '../../components/ui/Button';
-import { Input } from '../../components/ui/Input';
+import { CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { FaceIDScanner } from '../../components/FaceIDScanner';
+import { Button } from '../../components/ui/Button';
+import { GlassCard } from '../../components/ui/GlassCard';
+import { Input } from '../../components/ui/Input';
 import * as api from '../../services/api';
+import './FaceRegistrationPage.css';
 
-type Player = {
+type ScanState = 'idle' | 'scanning' | 'success' | 'error';
+
+type PlayerSlot = {
   id: number;
   name: string;
   registered: boolean;
+  thumbUrl?: string;
+  profileId?: number;
+  source?: 'database' | 'new';
 };
 
-type ScanState = 'idle' | 'scanning' | 'success' | 'error';
+const DEFAULT_HINT = 'Смотрите прямо в камеру';
+
+function createSlots(playerCount: number): PlayerSlot[] {
+  return Array.from({ length: playerCount }, (_, index) => ({
+    id: index + 1,
+    name: '',
+    registered: false,
+  }));
+}
+
+function findNextPending(players: PlayerSlot[], currentIndex: number): number {
+  for (let i = currentIndex + 1; i < players.length; i += 1) {
+    if (!players[i].registered) {
+      return i;
+    }
+  }
+  for (let i = 0; i < players.length; i += 1) {
+    if (!players[i].registered) {
+      return i;
+    }
+  }
+  return currentIndex;
+}
 
 export function FaceRegistrationPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const playerCount = location.state?.playerCount || 10;
 
-  const [players, setPlayers] = useState<Player[]>(() =>
-    Array.from({ length: playerCount }, (_, i) => ({
-      id: i + 1,
-      name: '',
-      registered: false,
-    }))
-  );
+  const [players, setPlayers] = useState<PlayerSlot[]>(() => createSlots(playerCount));
   const [currentIndex, setCurrentIndex] = useState(0);
   const [scanState, setScanState] = useState<ScanState>('idle');
   const [scanProgress, setScanProgress] = useState(0);
   const [videoRunning, setVideoRunning] = useState(false);
+  const [hint, setHint] = useState(DEFAULT_HINT);
   const [error, setError] = useState('');
-  const [hint, setHint] = useState('Смотрите прямо в камеру');
   const [registeredPlayers, setRegisteredPlayers] = useState<api.Player[]>([]);
   const [showPlayerList, setShowPlayerList] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  const scanIntervalRef = useRef<NodeJS.Timeout>();
+  const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const snapBusyRef = useRef(false);
+
   const currentPlayer = players[currentIndex];
-  const allRegistered = players.every(p => p.registered);
+  const registeredCount = players.filter((player) => player.registered).length;
+  const allRegistered = registeredCount === playerCount;
 
-  // Start video on mount (no cleanup - keep video running)
+  const usedProfileIds = useMemo(() => {
+    const ids = new Set<number>();
+    players.forEach((player) => {
+      if (typeof player.profileId === 'number') {
+        ids.add(player.profileId);
+      }
+    });
+    return ids;
+  }, [players]);
+
+  const filteredRegisteredPlayers = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      return registeredPlayers;
+    }
+    return registeredPlayers.filter((player) => {
+      const displayName = player.name?.trim() || `Игрок ${player.id}`;
+      return displayName.toLowerCase().includes(query);
+    });
+  }, [registeredPlayers, searchQuery]);
+
   useEffect(() => {
-    startVideoStream();
-    loadRegisteredPlayers();
-    // Don't stop video on unmount - it should keep running
+    void startVideoStream();
+    void loadRegisteredPlayers();
+
+    return () => {
+      clearScanLoop();
+      void api.enrollCancel().catch(() => undefined);
+      void api.setVideoGestures(true).catch(() => undefined);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadRegisteredPlayers = async () => {
+  function clearScanLoop() {
+    if (scanIntervalRef.current) {
+      clearInterval(scanIntervalRef.current);
+      scanIntervalRef.current = null;
+    }
+    snapBusyRef.current = false;
+  }
+
+  async function loadRegisteredPlayers() {
     try {
       const response = await api.listPlayers();
       setRegisteredPlayers(response.players || []);
     } catch (err) {
       console.error('Failed to load players:', err);
     }
-  };
+  }
 
-  const startVideoStream = async () => {
+  async function startVideoStream() {
     try {
-      console.log('[Video] Starting video stream...');
       const response = await api.startVideo();
-      console.log('[Video] Start response:', response);
+      if (!response.ok) {
+        throw new Error(response.error || 'Не удалось запустить видео');
+      }
       setVideoRunning(true);
-      console.log('[Video] Video stream URL:', api.getVideoStreamUrl());
-    } catch (err) {
-      console.error('[Video] Failed to start video:', err);
-      setError('Не удалось запустить видео');
+      await api.setVideoGestures(false);
+    } catch (err: any) {
+      console.error('Failed to start video:', err);
+      setError(err?.message || 'Не удалось запустить видео');
     }
-  };
+  }
 
-  const stopVideoStream = async () => {
+  async function stopVideoStream() {
     try {
-      await api.stopVideo();
+      clearScanLoop();
       await api.enrollCancel();
+      await api.setVideoGestures(true);
+      await api.stopVideo();
+      setVideoRunning(false);
     } catch (err) {
       console.error('Failed to stop video:', err);
     }
-  };
+  }
 
-  const handleNameChange = (value: string) => {
-    setPlayers(prev => prev.map((p, i) =>
-      i === currentIndex ? { ...p, name: value } : p
-    ));
+  function handleNameChange(value: string) {
+    setPlayers((prev) =>
+      prev.map((player, index) =>
+        index === currentIndex ? { ...player, name: value } : player,
+      ),
+    );
     setError('');
-  };
+  }
 
-  const handleStartScan = async () => {
-    const player = players[currentIndex];
-    if (!player.name.trim()) {
+  async function handleOpenDatabase() {
+    await loadRegisteredPlayers();
+    setSearchQuery('');
+    setShowPlayerList(true);
+  }
+
+  function assignFromDatabase(selected: api.Player) {
+    const inUseByAnotherSlot = players.some(
+      (player, index) => player.profileId === selected.id && index !== currentIndex,
+    );
+    if (inUseByAnotherSlot) {
+      setError('Этот профиль уже назначен другому месту.');
+      return;
+    }
+
+    const selectedName = selected.name?.trim() || `Игрок ${selected.id}`;
+    const thumbUrl = api.getPlayerThumbUrl(selected);
+
+    setPlayers((prev) => {
+      const updated = prev.map((player, index) =>
+        index === currentIndex
+          ? {
+              ...player,
+              name: selectedName,
+              registered: true,
+              thumbUrl,
+              profileId: selected.id,
+              source: 'database',
+            }
+          : player,
+      );
+      const next = findNextPending(updated, currentIndex);
+      setCurrentIndex(next);
+      return updated;
+    });
+
+    setScanState('idle');
+    setScanProgress(100);
+    setHint(DEFAULT_HINT);
+    setShowPlayerList(false);
+    setError('');
+  }
+
+  function clearSlot(index: number) {
+    setPlayers((prev) =>
+      prev.map((player, slotIndex) =>
+        slotIndex === index
+          ? {
+              ...player,
+              registered: false,
+              source: undefined,
+              profileId: undefined,
+              thumbUrl: undefined,
+            }
+          : player,
+      ),
+    );
+    setCurrentIndex(index);
+    setScanState('idle');
+    setScanProgress(0);
+    setHint(DEFAULT_HINT);
+    setError('');
+  }
+
+  async function finishEnrollment(name: string) {
+    try {
+      const finishRes = await api.enrollFinish(name);
+      if (!finishRes.ok) {
+        throw new Error(finishRes.error || 'Не удалось завершить регистрацию');
+      }
+
+      const enrolledProfile = finishRes.player as Partial<api.Player> | undefined;
+      const thumbUrl = enrolledProfile?.thumb
+        ? api.getPlayerThumbUrl({ thumb: enrolledProfile.thumb, rev: Date.now() })
+        : undefined;
+
+      setPlayers((prev) => {
+        const updated = prev.map((player, index) =>
+          index === currentIndex
+            ? {
+                ...player,
+                registered: true,
+                source: 'new',
+                profileId: enrolledProfile?.id,
+                thumbUrl,
+              }
+            : player,
+        );
+
+        const next = findNextPending(updated, currentIndex);
+        setTimeout(() => {
+          setCurrentIndex(next);
+          setScanState('idle');
+          setScanProgress(0);
+          setHint(DEFAULT_HINT);
+        }, 450);
+        return updated;
+      });
+
+      setScanState('success');
+      setScanProgress(100);
+      await loadRegisteredPlayers();
+    } catch (err: any) {
+      setScanState('error');
+      setError(err?.message || 'Ошибка завершения регистрации');
+    }
+  }
+
+  async function handleStartScan() {
+    if (scanState === 'scanning') {
+      return;
+    }
+
+    const name = currentPlayer.name.trim();
+    if (!name) {
       setError('Введите имя игрока');
       return;
     }
@@ -94,431 +272,321 @@ export function FaceRegistrationPage() {
     try {
       setScanState('scanning');
       setScanProgress(0);
+      setHint(DEFAULT_HINT);
       setError('');
 
-      // Start enrollment session
-      const startRes = await api.enrollStart(player.name, 12);
+      const startRes = await api.enrollStart(name, 12);
       if (!startRes.ok) {
-        throw new Error(startRes.error || 'Failed to start enrollment');
+        throw new Error(startRes.error || 'Не удалось начать регистрацию');
       }
 
-      // Start collecting samples
+      clearScanLoop();
       scanIntervalRef.current = setInterval(async () => {
+        if (snapBusyRef.current) {
+          return;
+        }
+        snapBusyRef.current = true;
         try {
           const snapRes = await api.enrollSnap();
-          if (snapRes.ok) {
-            const statusRes = await api.enrollStatus();
-            if (statusRes.ok && statusRes.progress !== undefined) {
-              setScanProgress(statusRes.progress * 100);
-
-              // Update hint from backend
-              if (statusRes.hint) {
-                setHint(statusRes.hint);
-              }
-
-              // Check if we have enough samples
-              if (statusRes.count && statusRes.target && statusRes.count >= statusRes.target) {
-                clearInterval(scanIntervalRef.current!);
-                await finishEnrollment(player.name);
-              }
-            }
+          if (!snapRes.ok) {
+            return;
           }
-        } catch (err) {
-          console.error('Snap error:', err);
+
+          const statusRes = await api.enrollStatus();
+          if (!statusRes.ok || statusRes.progress === undefined) {
+            return;
+          }
+
+          setScanProgress(Math.round(statusRes.progress * 100));
+          setHint(statusRes.hint || DEFAULT_HINT);
+
+          if (
+            typeof statusRes.count === 'number' &&
+            typeof statusRes.target === 'number' &&
+            statusRes.count >= statusRes.target
+          ) {
+            clearScanLoop();
+            await finishEnrollment(name);
+          }
+        } catch (scanErr) {
+          console.error('Snap error:', scanErr);
+        } finally {
+          snapBusyRef.current = false;
         }
-      }, 200); // Snap every 200ms
-
+      }, 220);
     } catch (err: any) {
-      console.error('Scan error:', err);
-      setError(err.message || 'Ошибка сканирования');
+      clearScanLoop();
       setScanState('error');
-      if (scanIntervalRef.current) {
-        clearInterval(scanIntervalRef.current);
-      }
+      setError(err?.message || 'Ошибка сканирования');
     }
-  };
+  }
 
-  const finishEnrollment = async (name: string) => {
-    try {
-      const finishRes = await api.enrollFinish(name);
-      if (finishRes.ok) {
-        setScanState('success');
-        setScanProgress(100);
-
-        // Mark player as registered
-        setPlayers(prev => prev.map((p, i) =>
-          i === currentIndex ? { ...p, registered: true } : p
-        ));
-
-        // Auto-advance to next player after 1 second
-        setTimeout(() => {
-          if (currentIndex < players.length - 1) {
-            setCurrentIndex(currentIndex + 1);
-            setScanState('idle');
-            setScanProgress(0);
-          } else {
-            // All done
-            setScanState('idle');
-          }
-        }, 1000);
-      } else {
-        throw new Error(finishRes.error || 'Failed to finish enrollment');
-      }
-    } catch (err: any) {
-      console.error('Finish error:', err);
-      setError(err.message || 'Ошибка завершения');
-      setScanState('error');
-    }
-  };
-
-  const handleCancelScan = () => {
-    if (scanIntervalRef.current) {
-      clearInterval(scanIntervalRef.current);
-    }
-    api.enrollCancel();
+  async function handleCancelScan() {
+    clearScanLoop();
+    await api.enrollCancel();
     setScanState('idle');
     setScanProgress(0);
-  };
+    setHint(DEFAULT_HINT);
+  }
 
-  const handlePlayerClick = (index: number) => {
-    if (!players[index].registered && scanState === 'idle') {
-      setCurrentIndex(index);
-    }
-  };
-
-  const handleSelectExistingPlayer = (registeredPlayer: api.Player) => {
-    setPlayers(prev => prev.map((p, i) =>
-      i === currentIndex
-        ? { ...p, name: registeredPlayer.name, registered: true }
-        : p
-    ));
-    setShowPlayerList(false);
-    setError('');
-  };
-
-  const handleDeletePlayer = async (playerId: number) => {
+  async function handleDeletePlayer(playerId: number) {
     try {
       await api.deletePlayer(playerId);
+      setPlayers((prev) =>
+        prev.map((player) =>
+          player.profileId === playerId
+            ? {
+                ...player,
+                registered: false,
+                source: undefined,
+                profileId: undefined,
+                thumbUrl: undefined,
+              }
+            : player,
+        ),
+      );
       await loadRegisteredPlayers();
     } catch (err) {
       console.error('Failed to delete player:', err);
     }
-  };
+  }
 
-  const handleResetDatabase = async () => {
-    if (confirm('Вы уверены что хотите удалить всех зарегистрированных игроков?')) {
-      try {
-        await api.resetPlayers();
-        await loadRegisteredPlayers();
-      } catch (err) {
-        console.error('Failed to reset players:', err);
-      }
+  async function handleResetDatabase() {
+    if (!confirm('Удалить все сохраненные лица из базы?')) {
+      return;
     }
-  };
+    try {
+      await api.resetPlayers();
+      setPlayers(createSlots(playerCount));
+      setCurrentIndex(0);
+      setScanState('idle');
+      setScanProgress(0);
+      setHint(DEFAULT_HINT);
+      await loadRegisteredPlayers();
+      setShowPlayerList(false);
+    } catch (err) {
+      console.error('Failed to reset players:', err);
+    }
+  }
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '2rem',
-      gap: '2rem',
-    }}>
-      {/* Progress */}
-      <div style={{ width: '100%', maxWidth: '900px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.875rem' }}>
-          <span style={{ color: '#94a3b8' }}>Регистрация лиц</span>
-          <span style={{ color: '#e2e8f0', fontWeight: 600 }}>
-            {players.filter(p => p.registered).length} / {playerCount}
-          </span>
-        </div>
-        <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.08)', borderRadius: '3px' }}>
-          <div style={{
-            height: '100%',
-            background: '#4f46e5',
-            borderRadius: '3px',
-            width: `${(players.filter(p => p.registered).length / playerCount) * 100}%`,
-            transition: 'width 0.3s ease',
-          }} />
-        </div>
-      </div>
+    <div className="setup-shell">
+      <div className="setup-container">
+        <GlassCard className="stack panel-pad">
+          <div className="face-reg__header">
+            <div>
+              <h1 className="feature-card__title">Регистрация лиц</h1>
+              <p className="feature-card__text">
+                Назначайте профили из базы или регистрируйте новые лица по каждому месту.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={() => void handleOpenDatabase()}>
+              База лиц ({registeredPlayers.length})
+            </Button>
+          </div>
 
-      {/* Main content */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
-        gap: '2rem',
-        maxWidth: '900px',
-        width: '100%',
-      }}>
-        {/* Scanner */}
-        <GlassCard style={{ padding: '2rem' }}>
-          <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1.5rem' }}>
-            Игрок {currentPlayer.id}
-          </h2>
+          <div className="setup-progress">
+            <div className="setup-progress__row">
+              <span>Заполнено мест</span>
+              <span>{registeredCount} / {playerCount}</span>
+            </div>
+            <div className="setup-progress__bar">
+              <div
+                className="setup-progress__fill"
+                style={{ '--progress-value': `${(registeredCount / playerCount) * 100}%` } as CSSProperties}
+              />
+            </div>
+          </div>
+        </GlassCard>
 
-          {/* Name input */}
-          {!currentPlayer.registered && (
+        <div className="setup-grid setup-grid--two">
+          <GlassCard className="face-reg__main">
+            <div className="face-reg__current">
+              <h2 className="feature-card__title">Место {currentPlayer.id}</h2>
+              <span className={`status-tag ${currentPlayer.registered ? 'status-tag--success' : 'status-tag--warn'}`}>
+                {currentPlayer.registered ? 'Заполнено' : 'Ожидает'}
+              </span>
+            </div>
+
             <Input
               label="Имя игрока"
-              placeholder="Введите имя"
               value={currentPlayer.name}
-              onChange={(e) => handleNameChange(e.target.value)}
-              error={error}
-              style={{ marginBottom: '1.5rem' }}
+              placeholder="Введите имя"
+              onChange={(event) => handleNameChange(event.target.value)}
               disabled={scanState === 'scanning'}
+              error={error}
             />
-          )}
 
-          {/* Face scanner */}
-          <FaceIDScanner
-            state={currentPlayer.registered ? 'success' : scanState}
-            progress={scanProgress}
-            videoUrl={videoRunning ? api.getVideoStreamUrl() : undefined}
-          />
+            <FaceIDScanner
+              state={currentPlayer.registered ? 'success' : scanState}
+              progress={scanProgress}
+              videoUrl={videoRunning ? api.getVideoStreamUrl() : undefined}
+            />
 
-          {/* Hint */}
-          {scanState === 'scanning' && (
-            <div style={{
-              marginTop: '1rem',
-              padding: '0.75rem',
-              background: 'rgba(79, 70, 229, 0.1)',
-              border: '1px solid rgba(79, 70, 229, 0.3)',
-              borderRadius: '0.5rem',
-              textAlign: 'center',
-              color: '#a5b4fc',
-              fontSize: '0.875rem',
-              fontWeight: 500,
-            }}>
-              {hint}
-            </div>
-          )}
+            <div className="face-reg__hint">{scanState === 'scanning' ? hint : DEFAULT_HINT}</div>
 
-          {/* Controls */}
-          <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {scanState === 'idle' && !currentPlayer.registered && (
-              <>
-                <Button
-                  onClick={handleStartScan}
-                  fullWidth
-                  disabled={!currentPlayer.name.trim()}
-                >
-                  Начать сканирование
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => setShowPlayerList(true)}
-                  fullWidth
-                >
-                  Выбрать из базы ({registeredPlayers.length})
-                </Button>
-              </>
-            )}
-            {scanState === 'scanning' && (
+            <div className="face-reg__actions">
               <Button
-                variant="secondary"
-                onClick={handleCancelScan}
+                onClick={() => void handleStartScan()}
+                disabled={scanState === 'scanning' || !currentPlayer.name.trim()}
                 fullWidth
               >
-                Отменить
+                Начать сканирование
               </Button>
-            )}
-            {currentPlayer.registered && (
-              <div style={{
-                padding: '1rem',
-                background: 'rgba(16, 185, 129, 0.1)',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
-                borderRadius: '0.5rem',
-                textAlign: 'center',
-                color: '#10b981',
-                fontWeight: 600,
-                width: '100%',
-              }}>
-                {currentPlayer.name} зарегистрирован!
-              </div>
-            )}
-          </div>
-
-          {/* Database reset button */}
-          {registeredPlayers.length > 0 && (
-            <div style={{ marginTop: '1rem' }}>
               <Button
                 variant="secondary"
-                onClick={handleResetDatabase}
+                onClick={() => (scanState === 'scanning' ? void handleCancelScan() : void handleOpenDatabase())}
                 fullWidth
-                style={{
-                  background: 'rgba(239, 68, 68, 0.1)',
-                  borderColor: 'rgba(239, 68, 68, 0.3)',
-                  color: '#f87171',
-                }}
               >
-                Очистить базу данных
+                {scanState === 'scanning' ? 'Отменить' : 'Выбрать из базы'}
               </Button>
             </div>
-          )}
-        </GlassCard>
+          </GlassCard>
 
-        {/* Players list */}
-        <GlassCard style={{ padding: '2rem' }}>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '1rem' }}>Игроки</h3>
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.75rem',
-            maxHeight: '500px',
-            overflowY: 'auto',
-          }}>
-            {players.map((p, i) => (
-              <div
-                key={p.id}
-                onClick={() => handlePlayerClick(i)}
-                style={{
-                  padding: '0.75rem 1rem',
-                  background: i === currentIndex ? 'rgba(79,70,229,0.1)' : 'rgba(255,255,255,0.03)',
-                  border: i === currentIndex ? '1px solid rgba(79,70,229,0.3)' : '1px solid rgba(255,255,255,0.05)',
-                  borderRadius: '8px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.75rem',
-                  cursor: p.registered ? 'default' : 'pointer',
-                  transition: 'all 0.15s ease',
-                }}
-              >
-                <div style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '50%',
-                  background: p.registered ? '#10b981' : 'rgba(255,255,255,0.08)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '0.875rem',
-                  fontWeight: 600,
-                  flexShrink: 0,
-                }}>
-                  {p.registered ? '✓' : p.id}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontWeight: 500,
-                    fontSize: '0.9375rem',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {p.name || `Игрок ${p.id}`}
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-                    {p.registered ? 'Зарегистрирован' : i === currentIndex ? 'Текущий' : 'Ожидание'}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </GlassCard>
-      </div>
-
-      {/* Modal: Player list */}
-      {showPlayerList && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(0, 0, 0, 0.7)',
-          backdropFilter: 'blur(4px)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: '2rem',
-        }} onClick={() => setShowPlayerList(false)}>
-          <GlassCard style={{
-            padding: '2rem',
-            maxWidth: '500px',
-            width: '100%',
-            maxHeight: '80vh',
-            overflowY: 'auto',
-          }} onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1.5rem' }}>
-              Зарегистрированные игроки
-            </h2>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {registeredPlayers.map((player) => (
-                <div
+          <GlassCard className="face-reg__slots">
+            <h2 className="feature-card__title">Игровые места</h2>
+            <div className="face-reg__slot-list">
+              {players.map((player, index) => (
+                <button
+                  type="button"
                   key={player.id}
-                  style={{
-                    padding: '1rem',
-                    background: 'rgba(255, 255, 255, 0.03)',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    borderRadius: '8px',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
+                  className={`face-reg__slot-item ${index === currentIndex ? 'is-active' : ''} ${player.registered ? 'is-filled' : ''}`.trim()}
+                  onClick={() => {
+                    if (scanState !== 'scanning') {
+                      setCurrentIndex(index);
+                    }
                   }}
                 >
-                  <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{player.name}</span>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <Button
-                      onClick={() => handleSelectExistingPlayer(player)}
-                      style={{ padding: '0.5rem 1rem' }}
-                    >
-                      Выбрать
-                    </Button>
+                  <div className="face-reg__slot-thumb">
+                    {player.thumbUrl ? (
+                      <img src={player.thumbUrl} alt={player.name || `Игрок ${player.id}`} />
+                    ) : (
+                      <span>{player.id}</span>
+                    )}
+                  </div>
+
+                  <div className="face-reg__slot-meta">
+                    <strong>{player.name || `Игрок ${player.id}`}</strong>
+                    <span>
+                      {player.registered
+                        ? player.source === 'database'
+                          ? 'Назначен из базы'
+                          : 'Новый профиль'
+                        : 'Не зарегистрирован'}
+                    </span>
+                  </div>
+
+                  {player.registered && scanState !== 'scanning' && (
                     <Button
                       variant="secondary"
-                      onClick={() => handleDeletePlayer(player.id)}
-                      style={{
-                        padding: '0.5rem 1rem',
-                        background: 'rgba(239, 68, 68, 0.1)',
-                        borderColor: 'rgba(239, 68, 68, 0.3)',
-                        color: '#f87171',
+                      size="sm"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        clearSlot(index);
                       }}
+                    >
+                      Сброс
+                    </Button>
+                  )}
+                </button>
+              ))}
+            </div>
+          </GlassCard>
+        </div>
+
+        <div className="setup-actions">
+          <Button
+            variant="secondary"
+            size="lg"
+            onClick={() => {
+              void stopVideoStream();
+              navigate('/setup/players');
+            }}
+          >
+            Назад
+          </Button>
+          <Button
+            size="lg"
+            disabled={!allRegistered}
+            onClick={() => {
+              void stopVideoStream();
+              navigate('/setup/voice');
+            }}
+          >
+            {allRegistered ? 'Продолжить' : 'Завершите регистрацию всех игроков'}
+          </Button>
+        </div>
+      </div>
+
+      {showPlayerList && (
+        <div className="face-db" onClick={() => setShowPlayerList(false)}>
+          <GlassCard className="face-db__panel" onClick={(event) => event.stopPropagation()}>
+            <div className="face-db__header">
+              <h2 className="feature-card__title">База лиц ({registeredPlayers.length})</h2>
+              <div className="face-db__header-actions">
+                <Button
+                  variant="secondary"
+                  onClick={() => void handleResetDatabase()}
+                  className="face-db__danger-action"
+                >
+                  Очистить базу
+                </Button>
+                <Button variant="secondary" onClick={() => setShowPlayerList(false)}>
+                  Закрыть
+                </Button>
+              </div>
+            </div>
+
+            <Input
+              placeholder="Поиск по имени"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+            />
+
+            <div className="face-db__grid">
+              {filteredRegisteredPlayers.map((player) => {
+                const displayName = player.name || `Игрок ${player.id}`;
+                const thumbUrl = api.getPlayerThumbUrl(player);
+                const alreadyUsed = usedProfileIds.has(player.id);
+                const isCurrentSlot = currentPlayer.profileId === player.id;
+
+                return (
+                  <GlassCard key={player.id} className="face-db__card">
+                    <div className="face-db__thumb">
+                      {thumbUrl ? <img src={thumbUrl} alt={displayName} /> : <span>Нет превью</span>}
+                    </div>
+                    <div className="face-db__meta">
+                      <strong>{displayName}</strong>
+                      <span>ID профиля: {player.id}</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      disabled={alreadyUsed && !isCurrentSlot}
+                      onClick={() => assignFromDatabase(player)}
+                      fullWidth
+                    >
+                      {alreadyUsed && !isCurrentSlot ? 'Уже назначен' : 'Выбрать'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void handleDeletePlayer(player.id)}
+                      className="face-db__danger-action"
+                      fullWidth
                     >
                       Удалить
                     </Button>
-                  </div>
-                </div>
-              ))}
+                  </GlassCard>
+                );
+              })}
             </div>
 
-            <Button
-              variant="secondary"
-              onClick={() => setShowPlayerList(false)}
-              fullWidth
-              style={{ marginTop: '1.5rem' }}
-            >
-              Закрыть
-            </Button>
+            {filteredRegisteredPlayers.length === 0 && (
+              <div className="face-db__empty">В базе пока нет лиц под текущий фильтр.</div>
+            )}
           </GlassCard>
         </div>
       )}
-
-      {/* Actions */}
-      <div style={{ display: 'flex', gap: '1rem' }}>
-        <Button
-          variant="secondary"
-          size="lg"
-          onClick={() => {
-            stopVideoStream();
-            navigate('/setup/players');
-          }}
-        >
-          Назад
-        </Button>
-        <Button
-          size="lg"
-          disabled={!allRegistered}
-          onClick={() => {
-            stopVideoStream();
-            navigate('/setup/voice-registration', { state: { playerCount, players } });
-          }}
-          style={{ minWidth: '180px' }}
-        >
-          {allRegistered ? 'Продолжить' : 'Завершите регистрацию'}
-        </Button>
-      </div>
     </div>
   );
 }

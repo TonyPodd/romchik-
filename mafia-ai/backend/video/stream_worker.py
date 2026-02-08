@@ -208,6 +208,7 @@ class GestureStream:
         # Режимы
         self.detect_enabled: bool = True
         self.render_mode: int = RENDER_FULL
+        self.gestures_enabled: bool = True
 
         # Буферы
         self._last_raw_jpeg: Optional[bytes] = None
@@ -226,6 +227,9 @@ class GestureStream:
 
     def set_render_mode(self, mode: int):
         self.render_mode = int(mode)
+
+    def set_gestures_enabled(self, flag: bool):
+        self.gestures_enabled = bool(flag)
 
     def begin_table_calibration(self):
         """Вызывайте при входе в шаг калибровки стола."""
@@ -619,68 +623,77 @@ class GestureStream:
                     jpeg = await self._encode_jpeg(table_only)
 
                 else:  # RENDER_FULL
-                    # жесты + лица (real-time detection every frame for accuracy)
-                    res = await asyncio.to_thread(self._det.process_frame, frame)
-
-                    # Run face detection on EVERY frame for accurate bounding boxes
+                    # лица всегда считаем; жесты можно отключить для registration flow
+                    hands_out: List[Dict[str, Any]] = []
+                    fist_on_table = False
+                    digit = -1
+                    res = None
+                    if self.gestures_enabled:
+                        res = await asyncio.to_thread(self._det.process_frame, frame)
+                        digit = int(res.digit)
                     faces = await asyncio.to_thread(self._safe_face_analyze, frame)
                     matches = self._match_faces(faces)
 
-                    h, w = frame.shape[:2]
-                    poly_px = self._poly_px(w, h)
-                    fist_on_table = res.fist_on_table
-                    if poly_px is not None:
-                        fist_on_table = any((hnd.count == 0 and _point_in_poly(hnd.center, poly_px)) for hnd in res.hands)
+                    if self.gestures_enabled and res is not None:
+                        h, w = frame.shape[:2]
+                        poly_px = self._poly_px(w, h)
+                        fist_on_table = res.fist_on_table
+                        if poly_px is not None:
+                            fist_on_table = any((hnd.count == 0 and _point_in_poly(hnd.center, poly_px)) for hnd in res.hands)
 
-                    def center_face(bb):
-                        x1, y1, x2, y2 = bb
-                        return ((x1 + x2) // 2, (y1 + y2) // 2)
+                        def center_face(bb):
+                            x1, y1, x2, y2 = bb
+                            return ((x1 + x2) // 2, (y1 + y2) // 2)
 
-                    face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
+                        face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
 
-                    def _label_for_hand(h) -> Tuple[str, int]:
-                        if hasattr(h, "extended") and h.extended is not None:
-                            cnt = int(sum(1 for v in h.extended if v))
-                        else:
-                            cnt = int(getattr(h, "count", 0))
-                        name = {0: "fist", 1: "one", 2: "two", 3: "three", 4: "four", 5: "open"}.get(cnt, f"{cnt}-fingers")
-                        return name, cnt
+                        def _label_for_hand(h) -> Tuple[str, int]:
+                            if hasattr(h, "extended") and h.extended is not None:
+                                cnt = int(sum(1 for v in h.extended if v))
+                            else:
+                                cnt = int(getattr(h, "count", 0))
+                            name = {0: "fist", 1: "one", 2: "two", 3: "three", 4: "four", 5: "open"}.get(cnt, f"{cnt}-fingers")
+                            return name, cnt
 
-                    hands_out = []
-                    for hnd in res.hands:
-                        owner = None
-                        if face_centers:
-                            cx, cy = hnd.center
-                            dists = [((cx - fc[1][0]) ** 2 + (cy - fc[1][1]) ** 2, fc[0]) for fc in face_centers]
-                            dists.sort(key=lambda t: t[0])
-                            owner = dists[0][1]
-                        label, fingers = _label_for_hand(hnd)
-                        hands_out.append({
-                            "bbox": hnd.bbox,
-                            "center": hnd.center,
-                            "count": int(hnd.count),
-                            "extended": hnd.extended,
-                            "owner_id": owner,
-                            "label": label,
-                            "fingers": fingers,
-                        })
+                        for hnd in res.hands:
+                            owner = None
+                            if face_centers:
+                                cx, cy = hnd.center
+                                dists = [((cx - fc[1][0]) ** 2 + (cy - fc[1][1]) ** 2, fc[0]) for fc in face_centers]
+                                dists.sort(key=lambda t: t[0])
+                                owner = dists[0][1]
+                            label, fingers = _label_for_hand(hnd)
+                            hands_out.append({
+                                "bbox": hnd.bbox,
+                                "center": hnd.center,
+                                "count": int(hnd.count),
+                                "extended": hnd.extended,
+                                "owner_id": owner,
+                                "label": label,
+                                "fingers": fingers,
+                            })
 
                     now = time.time()
                     if now - last_evt >= 0.2:
                         last_evt = now
                         payload = {
                             "type": "gesture",
-                            "digit": res.digit,
+                            "digit": digit,
                             "fist_on_table": bool(fist_on_table),
                             "hands": hands_out,
                             "faces": [{"bbox": m["bbox"], "id": m["id"], "sim": m["sim"]} for m in matches],
+                            "gestures_enabled": self.gestures_enabled,
                         }
                         try:
                             await self.on_event(payload)
                         except Exception:
                             pass
 
-                    overlay = self._draw_overlay(frame, {"hands": hands_out, "fist_on_table": fist_on_table, "digit": res.digit}, matches)
+                    overlay = self._draw_overlay(
+                        frame,
+                        {"hands": hands_out, "fist_on_table": fist_on_table, "digit": digit},
+                        matches,
+                    )
                     jpeg = await self._encode_jpeg(overlay)
 
                 async with self._jpeg_lock:

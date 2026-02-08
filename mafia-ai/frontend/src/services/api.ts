@@ -1,4 +1,8 @@
-const API_BASE = 'http://localhost:8000';
+const API_HOST =
+  typeof window !== 'undefined' && window.location.hostname
+    ? window.location.hostname
+    : '127.0.0.1';
+const API_BASE = `http://${API_HOST}:8000`;
 const FETCH_TIMEOUT = 10000; // 10 seconds
 
 // Helper function with timeout
@@ -64,7 +68,7 @@ export interface EnrollFinishResponse {
 }
 
 // Video API
-export async function startVideo(): Promise<{ ok: boolean }> {
+export async function startVideo(): Promise<{ ok: boolean; [key: string]: any }> {
   console.log('[API] Calling POST /video/start...');
   const res = await fetchWithTimeout(`${API_BASE}/video/start`, { method: 'POST' });
   const data = await res.json();
@@ -77,8 +81,17 @@ export async function stopVideo(): Promise<{ ok: boolean }> {
   return res.json();
 }
 
-export async function getVideoStatus(): Promise<{ running: boolean }> {
+export async function getVideoStatus(): Promise<{ running: boolean; gestures_enabled?: boolean }> {
   const res = await fetchWithTimeout(`${API_BASE}/video/status`);
+  return res.json();
+}
+
+export async function setVideoGestures(enabled: boolean): Promise<{ ok: boolean; gestures_enabled?: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/video/gestures`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
   return res.json();
 }
 
@@ -131,6 +144,14 @@ export interface Player {
   embedding: number[];
   thumb?: string;
   rev?: number;
+}
+
+export function getPlayerThumbUrl(player: Pick<Player, 'thumb' | 'rev'>): string | undefined {
+  if (!player.thumb) {
+    return undefined;
+  }
+  const version = typeof player.rev === 'number' ? `?v=${player.rev}` : '';
+  return `${API_BASE}/static/${player.thumb}${version}`;
 }
 
 export async function listPlayers(): Promise<{ players: Player[] }> {

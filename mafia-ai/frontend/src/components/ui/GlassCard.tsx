@@ -6,15 +6,14 @@ interface GlassCardProps extends HTMLAttributes<HTMLDivElement> {
 
 export function GlassCard({
   children,
+  className = '',
   style = {},
   ...props
 }: GlassCardProps) {
   return (
     <div
+      className={`ui-glass-card ${className}`.trim()}
       style={{
-        background: '#1a1d2e',
-        border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: '12px',
         ...style,
       }}
       {...props}

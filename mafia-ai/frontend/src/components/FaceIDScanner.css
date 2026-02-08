@@ -1,266 +1,221 @@
-/* FaceIDScanner.css */
-
-.faceid-scanner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 3rem;
-  min-height: 500px;
+.face-scanner {
+  --scanner-accent: #64b4ff;
   position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 18px;
+  border: 1px solid rgba(143, 174, 236, 0.25);
+  overflow: hidden;
+  background: #060b18;
 }
 
-/* Scanner Rings */
-.scanner-rings {
-  position: relative;
-  width: 300px;
-  height: 300px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.face-scanner--success {
+  --scanner-accent: #2ecf96;
 }
 
-.ring {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
+.face-scanner--error {
+  --scanner-accent: #f57287;
 }
 
-.ring-glow {
+.face-scanner__video {
   width: 100%;
   height: 100%;
-  background: radial-gradient(
-    circle,
-    rgba(var(--primary-rgb), 0.3) 0%,
-    transparent 70%
-  );
-  filter: blur(20px);
+  object-fit: cover;
+  display: block;
 }
 
-.ring-main {
-  width: 240px;
-  height: 240px;
-  border: 3px solid rgba(var(--primary-rgb), 0.3);
-  background: radial-gradient(
-    circle,
-    rgba(var(--primary-rgb), 0.05) 0%,
-    transparent 70%
-  );
-  backdrop-filter: blur(10px);
-  box-shadow:
-    0 0 20px rgba(var(--primary-rgb), 0.2),
-    inset 0 0 20px rgba(var(--primary-rgb), 0.1);
-  transition: all 0.3s ease;
-}
-
-.ring-main.state-scanning {
-  border-color: rgba(var(--accent-rgb), 0.6);
-  box-shadow:
-    0 0 30px rgba(var(--accent-rgb), 0.4),
-    inset 0 0 30px rgba(var(--accent-rgb), 0.2);
-}
-
-.ring-main.state-success {
-  border-color: rgba(34, 197, 94, 0.8);
-  box-shadow:
-    0 0 40px rgba(34, 197, 94, 0.5),
-    inset 0 0 30px rgba(34, 197, 94, 0.2);
-}
-
-.ring-main.state-error {
-  border-color: rgba(239, 68, 68, 0.8);
-  box-shadow:
-    0 0 40px rgba(239, 68, 68, 0.5),
-    inset 0 0 30px rgba(239, 68, 68, 0.2);
-}
-
-.ring-highlight {
-  width: 260px;
-  height: 260px;
-  border: 2px solid rgba(34, 197, 94, 0.5);
-  background: radial-gradient(
-    circle,
-    rgba(34, 197, 94, 0.1) 0%,
-    transparent 70%
-  );
-}
-
-/* Scanning line */
-.scan-line {
-  position: absolute;
-  width: 100%;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(var(--accent-rgb), 0.8),
-    transparent
-  );
-  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.6);
-  transform-origin: center;
-}
-
-/* Progress SVG */
-.progress-svg {
-  position: absolute;
-  width: 100%;
-  height: 100%;
-  transform: rotate(-90deg);
-}
-
-.progress-fg {
-  color: rgba(var(--accent-rgb), 0.8);
-  filter: drop-shadow(0 0 5px rgba(var(--accent-rgb), 0.6));
-  transition: stroke-dashoffset 0.1s linear;
-}
-
-/* Face icon container */
-.face-icon-container {
-  position: absolute;
-  width: 120px;
-  height: 120px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.face-icon {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(var(--primary-rgb), 0.8);
-}
-
-.face-icon svg {
-  width: 80%;
-  height: 80%;
-}
-
-.face-icon.scanning {
-  position: relative;
-}
-
-.face-icon.success {
-  color: rgb(34, 197, 94);
-}
-
-.face-icon.error {
-  color: rgb(239, 68, 68);
-}
-
-.face-icon.processing {
-  color: rgba(var(--accent-rgb), 0.8);
-}
-
-/* Grid overlay for scanning */
-.grid-overlay {
-  position: absolute;
+.face-scanner__empty {
   width: 100%;
   height: 100%;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  grid-template-rows: repeat(5, 1fr);
-  gap: 4px;
-  padding: 10px;
+  place-items: center;
+  color: var(--text-soft);
+  font-size: 0.92rem;
 }
 
-.grid-dot {
-  width: 100%;
-  height: 100%;
-  background: rgba(var(--accent-rgb), 0.6);
-  border-radius: 50%;
-  box-shadow: 0 0 4px rgba(var(--accent-rgb), 0.8);
+.face-scanner__veil {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to top, rgba(5, 8, 15, 0.58), rgba(5, 8, 15, 0.22) 40%, rgba(5, 8, 15, 0.48)),
+    radial-gradient(circle at center, rgba(43, 75, 136, 0.08), transparent 60%);
 }
 
-/* Spinner */
-.spinner {
-  width: 100%;
-  height: 100%;
+.face-scanner__center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
 }
 
-/* Status text */
-.scanner-status {
-  margin-top: 2rem;
-  text-align: center;
-  min-height: 80px;
+.face-scanner__ring {
+  position: relative;
+  width: min(70%, 360px);
+  aspect-ratio: 1;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(145, 176, 240, 0.28);
+  background:
+    conic-gradient(from -90deg, var(--scanner-accent) var(--scan-progress), rgba(194, 209, 239, 0.18) 0),
+    radial-gradient(circle, rgba(96, 142, 245, 0.08), rgba(9, 14, 30, 0.45));
+  box-shadow:
+    0 0 0 1px rgba(155, 187, 248, 0.18) inset,
+    0 0 34px rgba(89, 155, 255, 0.25);
+}
+
+.face-scanner__mesh {
+  width: 78%;
+  aspect-ratio: 0.82;
+  border-radius: 45% 45% 50% 50% / 40% 40% 60% 60%;
+  border: 1px solid rgba(130, 173, 255, 0.55);
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(rgba(120, 170, 255, 0.24) 1px, transparent 1px) 0 0 / 100% 16px,
+    linear-gradient(90deg, rgba(120, 170, 255, 0.2) 1px, transparent 1px) 0 0 / 16px 100%,
+    rgba(36, 66, 121, 0.14);
+}
+
+.face-scanner__sweep {
+  position: absolute;
+  width: 72%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--scanner-accent), transparent);
+  box-shadow: 0 0 16px rgba(101, 181, 255, 0.82);
+  animation: scanner-sweep 2.1s ease-in-out infinite;
+  opacity: 0.95;
+}
+
+.face-scanner--idle .face-scanner__sweep {
+  animation-play-state: paused;
+  opacity: 0.45;
+}
+
+.face-scanner--success .face-scanner__sweep,
+.face-scanner--error .face-scanner__sweep {
+  display: none;
+}
+
+.face-scanner__segments {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  animation: scanner-rotate 7s linear infinite;
+}
+
+.face-scanner__segment {
+  --segment-turn: calc(var(--segment-index) * 1turn / 22);
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  width: 3px;
+  height: 18px;
+  border-radius: 999px;
+  transform-origin: center calc(50% + 170px);
+  transform: translateX(-50%) rotate(var(--segment-turn));
+  background: rgba(174, 204, 255, 0.36);
+  box-shadow: 0 0 8px rgba(109, 170, 255, 0.32);
+}
+
+.face-scanner--scanning .face-scanner__segment {
+  animation: segment-blink 1.4s ease-in-out infinite;
+  animation-delay: calc(var(--segment-index) * 60ms);
+}
+
+.face-scanner__result {
+  position: absolute;
+  width: 74px;
+  height: 74px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(6, 11, 22, 0.58);
+  border: 1px solid rgba(170, 208, 255, 0.85);
+  box-shadow: 0 0 24px rgba(81, 160, 255, 0.5);
+}
+
+.face-scanner__bottom {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.face-scanner__meta {
   display: flex;
-  flex-direction: column;
+  justify-content: space-between;
   align-items: center;
-  justify-content: center;
+  font-size: 0.78rem;
+  color: var(--text-main);
 }
 
-.status-title {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin-bottom: 0.5rem;
-  color: var(--text);
-  transition: color 0.3s ease;
+.face-scanner__progress {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(178, 196, 233, 0.3);
 }
 
-.status-title.success {
-  color: rgb(34, 197, 94);
+.face-scanner__progress-fill {
+  width: var(--scan-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #4d7dff, #63c0ff);
+  transition: width 0.18s linear;
 }
 
-.status-title.error {
-  color: rgb(239, 68, 68);
+@keyframes scanner-sweep {
+  0%,
+  100% {
+    transform: translateY(-32%) scaleX(0.88);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  50% {
+    transform: translateY(0) scaleX(1);
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(32%) scaleX(0.88);
+    opacity: 0;
+  }
 }
 
-.status-subtitle {
-  font-size: 1rem;
-  color: var(--text-muted);
-  opacity: 0.8;
-}
-
-/* Scan button */
-.scan-button {
-  margin-top: 2rem;
-  padding: 1rem 2rem;
-  font-size: 1.1rem;
-  font-weight: 600;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-/* Dark theme adjustments */
-[data-theme="dark"] .ring-main {
-  border-color: rgba(var(--primary-rgb), 0.4);
-}
-
-[data-theme="dark"] .face-icon {
-  color: rgba(var(--primary-rgb), 1);
-}
-
-/* Animations */
-@keyframes pulse {
-  0%, 100% {
-    opacity: 0.6;
-    transform: scale(1);
+@keyframes segment-blink {
+  0%,
+  100% {
+    opacity: 0.22;
+    background: rgba(174, 204, 255, 0.26);
   }
   50% {
     opacity: 1;
-    transform: scale(1.05);
+    background: rgba(126, 193, 255, 0.95);
+    box-shadow: 0 0 14px rgba(118, 189, 255, 0.65);
   }
 }
 
-@keyframes breathe {
-  0%, 100% {
-    opacity: 0.8;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.1);
-  }
-}
-
-@keyframes rotate {
-  from {
-    transform: rotate(0deg);
-  }
+@keyframes scanner-rotate {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 760px) {
+  .face-scanner__ring {
+    width: min(80%, 310px);
   }
 }

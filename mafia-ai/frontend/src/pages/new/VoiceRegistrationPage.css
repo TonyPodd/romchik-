@@ -1,0 +1,99 @@
+.voice-page__main,
+.voice-page__list {
+  padding: 1rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.voice-page__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.voice-page__recording {
+  display: grid;
+  gap: 0.75rem;
+  place-items: center;
+}
+
+.voice-page__recording strong {
+  color: var(--text-main);
+  font-size: 0.92rem;
+}
+
+.voice-page__status {
+  color: var(--text-soft);
+  font-size: 0.9rem;
+}
+
+.voice-page__actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.55rem;
+}
+
+.voice-page__players {
+  display: grid;
+  gap: 0.55rem;
+  max-height: 560px;
+  overflow: auto;
+}
+
+.voice-page__player {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: center;
+  border: 1px solid rgba(157, 183, 236, 0.23);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  text-align: left;
+  padding: 0.56rem;
+}
+
+.voice-page__player.is-active {
+  border-color: rgba(103, 153, 255, 0.58);
+  background: rgba(92, 131, 224, 0.18);
+}
+
+.voice-page__player.is-filled {
+  border-color: rgba(61, 189, 146, 0.35);
+  background: rgba(28, 118, 91, 0.18);
+}
+
+.voice-page__player-id {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(165, 191, 243, 0.34);
+  display: grid;
+  place-items: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.voice-page__player-meta {
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.voice-page__player-meta strong,
+.voice-page__player-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-page__player-meta strong {
+  font-size: 0.87rem;
+}
+
+.voice-page__player-meta small {
+  color: var(--text-soft);
+  font-size: 0.74rem;
+}

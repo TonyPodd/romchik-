@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
+import { CSSProperties, useEffect, useState } from 'react';
+import './FaceIDScanner.css';
 
 type ScanState = 'idle' | 'scanning' | 'success' | 'error';
 
@@ -9,174 +10,69 @@ interface FaceIDScannerProps {
 }
 
 export function FaceIDScanner({ state, progress = 0, videoUrl }: FaceIDScannerProps) {
-  const imgRef = useRef<HTMLImageElement>(null);
   const [streamUrl, setStreamUrl] = useState<string>('');
 
-  // MJPEG stream - add timestamp to force browser to load
   useEffect(() => {
-    if (videoUrl) {
-      // Add timestamp to bypass browser caching and force stream load
-      const url = `${videoUrl}?t=${Date.now()}`;
-      console.log('[FaceIDScanner] Setting stream URL:', url);
-      setStreamUrl(url);
-    } else {
+    if (!videoUrl) {
       setStreamUrl('');
+      return;
     }
+    setStreamUrl(`${videoUrl}?t=${Date.now()}`);
   }, [videoUrl]);
 
-  const getStateColor = () => {
-    switch (state) {
-      case 'scanning':
-        return '#10b981'; // зеленый для сканирования
-      case 'success':
-        return '#10b981';
-      case 'error':
-        return '#ef4444';
-      default:
-        return '#64748b';
-    }
-  };
+  const progressValue = Math.max(0, Math.min(100, Math.round(progress)));
+  const stateLabel =
+    state === 'success' ? 'Лицо сохранено' :
+    state === 'error' ? 'Ошибка сканирования' :
+    state === 'scanning' ? 'Идет сканирование' :
+    'Подготовка';
+
+  const scannerStyle = {
+    '--scan-progress': `${progressValue}%`,
+  } as CSSProperties;
 
   return (
-    <div style={{
-      position: 'relative',
-      width: '100%',
-      background: '#0f1117',
-      borderRadius: '1rem',
-      overflow: 'visible',
-    }}>
-      {/* Video stream */}
+    <div className={`face-scanner face-scanner--${state}`} style={scannerStyle}>
       {streamUrl ? (
-        <img
-          ref={imgRef}
-          src={streamUrl}
-          alt="Camera stream"
-          style={{
-            display: 'block',
-            width: '100%',
-            height: 'auto',
-            borderRadius: '1rem',
-          }}
-          onLoad={() => console.log('[FaceIDScanner] Stream loaded')}
-          onError={(e) => console.error('[FaceIDScanner] Stream error:', e)}
-        />
+        <img className="face-scanner__video" src={streamUrl} alt="Camera stream" />
       ) : (
-        <div style={{
-          fontSize: '4rem',
-          opacity: 0.2,
-        }}>
-          👤
-        </div>
+        <div className="face-scanner__empty">Видеопоток недоступен</div>
       )}
 
-      {/* Minimal overlay */}
-      <div style={{
-        position: 'absolute',
-        inset: 0,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}>
-        {/* Center progress circle - large and dynamic */}
-        {state === 'scanning' && (
-          <div style={{
-            position: 'relative',
-            width: '200px',
-            height: '200px',
-          }}>
-            {/* Pulsating glow */}
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                borderRadius: '50%',
-                background: `radial-gradient(circle, ${getStateColor()}40, transparent 70%)`,
-                animation: 'pulse 2s ease-in-out infinite',
-              }}
-            />
-            <svg
-              width="200"
-              height="200"
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                transform: 'rotate(-90deg)',
-              }}
-            >
-              {/* Background circle */}
-              <circle
-                cx="100"
-                cy="100"
-                r="95"
-                fill="none"
-                stroke="rgba(255, 255, 255, 0.1)"
-                strokeWidth="3"
+      <div className="face-scanner__veil" />
+      <div className="face-scanner__center">
+        <div className="face-scanner__ring">
+          <div className="face-scanner__mesh" />
+          <div className="face-scanner__sweep" />
+          <div className="face-scanner__segments">
+            {Array.from({ length: 22 }).map((_, index) => (
+              <span
+                // eslint-disable-next-line react/no-array-index-key
+                key={index}
+                style={{ '--segment-index': String(index) } as CSSProperties}
+                className="face-scanner__segment"
               />
-              {/* Progress circle with glow */}
-              <circle
-                cx="100"
-                cy="100"
-                r="95"
-                fill="none"
-                stroke={getStateColor()}
-                strokeWidth="4"
-                strokeLinecap="round"
-                strokeDasharray={`${2 * Math.PI * 95}`}
-                strokeDashoffset={`${2 * Math.PI * 95 * (1 - progress / 100)}`}
-                style={{
-                  transition: 'stroke-dashoffset 0.3s ease',
-                  filter: `drop-shadow(0 0 8px ${getStateColor()})`,
-                }}
-              />
-            </svg>
-
-            {/* Center content */}
-            <div style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexDirection: 'column',
-              gap: '0.5rem',
-            }}>
-              {/* Animated scanning icon */}
-              <div style={{
-                fontSize: '2rem',
-                color: getStateColor(),
-                animation: 'breathe 2s ease-in-out infinite',
-              }}>
-                👤
-              </div>
-              {/* Progress percentage */}
-              <div style={{
-                color: getStateColor(),
-                fontSize: '1.25rem',
-                fontWeight: 600,
-                textShadow: `0 0 10px ${getStateColor()}80`,
-              }}>
-                {Math.round(progress)}%
-              </div>
-            </div>
+            ))}
           </div>
-        )}
-
-        {/* Success/Error icons */}
-        {state === 'success' && (
-          <div style={{
-            fontSize: '5rem',
-            color: '#10b981',
-          }}>✓</div>
-        )}
-        {state === 'error' && (
-          <div style={{
-            fontSize: '5rem',
-            color: '#ef4444',
-          }}>✕</div>
-        )}
+          {(state === 'success' || state === 'error') && (
+            <div className="face-scanner__result">
+              {state === 'success' ? '✓' : '✕'}
+            </div>
+          )}
+        </div>
       </div>
 
+      <div className="face-scanner__bottom">
+        <div className="face-scanner__meta">
+          <span className={`status-tag ${state === 'success' ? 'status-tag--success' : ''} ${state === 'error' ? 'status-tag--danger' : ''}`}>
+            {stateLabel}
+          </span>
+          <span>{progressValue}%</span>
+        </div>
+        <div className="face-scanner__progress">
+          <div className="face-scanner__progress-fill" />
+        </div>
+      </div>
     </div>
   );
 }

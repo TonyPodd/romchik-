@@ -21,6 +21,9 @@ from storage import players as P
 from api.routers import game as game_router
 from application.services import get_container
 
+# Voice service
+from voice.voice_service import get_voice_service
+
 # --------------------------------------------------------------------------------------
 # App / CORS / Static
 # --------------------------------------------------------------------------------------
@@ -191,7 +194,10 @@ def health():
 
 @app.get("/video/status")
 def video_status():
-    return {"running": _stream is not None}
+    return {
+        "running": _stream is not None,
+        "gestures_enabled": bool(_stream.gestures_enabled) if _stream else True,
+    }
 
 # --------------------------------------------------------------------------------------
 # Video: start / stop / mjpeg
@@ -218,7 +224,13 @@ async def video_start(
     try:
         await _stream.start()
         print(f"[app] gesture stream started (camera={cam}, fps={f}, table_y_ratio={tyr})")
-        return {"ok": True, "camera_index": cam, "fps": f, "table_y_ratio": tyr}
+        return {
+            "ok": True,
+            "camera_index": cam,
+            "fps": f,
+            "table_y_ratio": tyr,
+            "gestures_enabled": _stream.gestures_enabled,
+        }
     except Exception as e:
         _stream = None
         print(f"[app] gesture stream failed: {e}")
@@ -233,6 +245,19 @@ async def video_stop():
     _stream = None
     print("[app] gesture stream stopped")
     return {"ok": True, "status": "stopped"}
+
+
+class _VideoGesturesIn(BaseModel):
+    enabled: bool
+
+
+@app.post("/video/gestures")
+async def video_set_gestures(body: _VideoGesturesIn):
+    global _stream
+    if not _stream:
+        return {"ok": False, "error": "video not running"}
+    _stream.set_gestures_enabled(body.enabled)
+    return {"ok": True, "gestures_enabled": _stream.gestures_enabled}
 
 async def _mjpeg_generator():
     """MJPEG-стрим. При отсутствии новых кадров повторяет последний, до ~60 FPS."""
@@ -707,3 +732,140 @@ def players_delete(body: _PlayerDeleteIn):
         pass
     ok = P.delete_player(body.id)
     return {"ok": ok}
+
+# --------------------------------------------------------------------------------------
+# Voice: register / identify / manage
+# --------------------------------------------------------------------------------------
+
+class _VoiceRegisterIn(BaseModel):
+    player_id: int
+    player_name: str
+    audio_samples: List[List[float]]  # List of audio arrays
+    sample_rate: int = 16000
+
+@app.post("/voice/register")
+async def voice_register(body: _VoiceRegisterIn):
+    """
+    Register player voice with multiple audio samples.
+
+    body: {
+        "player_id": int,
+        "player_name": str,
+        "audio_samples": List[List[float]],  # multiple audio samples
+        "sample_rate": int (optional, default 16000)
+    }
+
+    Returns: {"ok": bool, "samples_registered": int (if successful)}
+    """
+    try:
+        vs = get_voice_service()
+
+        # Convert audio samples from lists to numpy arrays
+        audio_arrays = [np.array(sample, dtype=np.float32) for sample in body.audio_samples]
+
+        success = vs.register_voice(
+            player_id=body.player_id,
+            player_name=body.player_name,
+            audio_samples=audio_arrays,
+            sr=body.sample_rate
+        )
+
+        if success:
+            profile = vs.profiles.get(body.player_id)
+            return {
+                "ok": True,
+                "samples_registered": len(profile.embeddings) if profile else 0
+            }
+        else:
+            return {"ok": False, "error": "registration_failed"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+class _VoiceIdentifyIn(BaseModel):
+    audio: List[float]  # Single audio sample
+    sample_rate: int = 16000
+
+@app.post("/voice/identify")
+async def voice_identify(body: _VoiceIdentifyIn):
+    """
+    Identify speaker from audio sample.
+
+    body: {
+        "audio": List[float],  # audio data
+        "sample_rate": int (optional, default 16000)
+    }
+
+    Returns: {
+        "ok": bool,
+        "player_id": int (if identified),
+        "player_name": str (if identified),
+        "confidence": float (if identified)
+    }
+    """
+    try:
+        vs = get_voice_service()
+
+        # Convert audio from list to numpy array
+        audio_array = np.array(body.audio, dtype=np.float32)
+
+        result = vs.identify_speaker(audio_array, sr=body.sample_rate)
+
+        if result:
+            player_id, player_name, confidence = result
+            return {
+                "ok": True,
+                "player_id": player_id,
+                "player_name": player_name,
+                "confidence": confidence
+            }
+        else:
+            return {"ok": True, "player_id": None, "player_name": None, "confidence": 0.0}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/voice/profiles")
+async def voice_profiles():
+    """
+    List all registered voice profiles.
+
+    Returns: {"ok": bool, "profiles": List[Dict]}
+    """
+    try:
+        vs = get_voice_service()
+        profiles = vs.list_profiles()
+        return {"ok": True, "profiles": profiles}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+class _VoiceDeleteIn(BaseModel):
+    player_id: int
+
+@app.post("/voice/profile/delete")
+async def voice_profile_delete(body: _VoiceDeleteIn):
+    """
+    Delete voice profile for a player.
+
+    body: {"player_id": int}
+
+    Returns: {"ok": bool}
+    """
+    try:
+        vs = get_voice_service()
+        success = vs.delete_profile(body.player_id)
+        return {"ok": success}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/voice/clear")
+async def voice_clear():
+    """
+    Clear all voice profiles.
+
+    Returns: {"ok": bool}
+    """
+    try:
+        vs = get_voice_service()
+        vs.clear_all()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
