@@ -15,26 +15,28 @@ export function WelcomePage() {
   return (
     <div className="setup-shell">
       <div className="setup-container">
-        <div className="setup-hero">
-          <h1 className="setup-title">MAFIA AI</h1>
-          <p className="setup-subtitle">
-            Конструктор игровой сессии: лица, голос, стол и запуск партии в едином setup-процессе.
-          </p>
-        </div>
+        <div className="setup-wizard">
+          <div className="setup-hero">
+            <h1 className="setup-title">MAFIA AI</h1>
+            <p className="setup-subtitle">
+              Конструктор игровой сессии: лица, голос, стол и запуск партии в едином setup-процессе.
+            </p>
+          </div>
 
-        <div className="feature-grid">
-          {features.map((feature) => (
-            <GlassCard key={feature.title} className="feature-card">
-              <h3 className="feature-card__title">{feature.title}</h3>
-              <p className="feature-card__text">{feature.desc}</p>
-            </GlassCard>
-          ))}
-        </div>
+          <div className="feature-grid">
+            {features.map((feature) => (
+              <GlassCard key={feature.title} className="feature-card">
+                <h3 className="feature-card__title">{feature.title}</h3>
+                <p className="feature-card__text">{feature.desc}</p>
+              </GlassCard>
+            ))}
+          </div>
 
-        <div className="setup-actions setup-actions--center">
-          <Button size="lg" onClick={() => navigate('/setup/players')}>
-            Начать настройку
-          </Button>
+          <div className="setup-actions setup-actions--center">
+            <Button size="lg" onClick={() => navigate('/setup/players')}>
+              Начать настройку
+            </Button>
+          </div>
         </div>
       </div>
     </div>

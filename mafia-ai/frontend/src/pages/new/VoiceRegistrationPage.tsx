@@ -1,5 +1,6 @@
-import { CSSProperties, useState } from 'react';
+import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { SetupStageHeader } from '../../components/SetupStageHeader';
 import { Button } from '../../components/ui/Button';
 import { GlassCard } from '../../components/ui/GlassCard';
 import './VoiceRegistrationPage.css';
@@ -69,97 +70,99 @@ export function VoiceRegistrationPage() {
   return (
     <div className="setup-shell">
       <div className="setup-container">
-        <GlassCard className="stack" style={{ padding: '1rem' }}>
-          <h1 className="feature-card__title">Регистрация голосов</h1>
-          <div className="setup-progress">
-            <div className="setup-progress__row">
+        <div className="setup-wizard">
+          <SetupStageHeader
+            current="voice"
+            title="Регистрация голосов"
+            subtitle="Сохраните короткий голосовой образец для каждого игрока."
+          />
+
+          <GlassCard className="voice-page__summary">
+            <div className="voice-page__summary-row">
               <span>Зарегистрировано голосов</span>
-              <span>{registeredCount} / {playerCount}</span>
+              <strong>{registeredCount} / {playerCount}</strong>
             </div>
-            <div className="setup-progress__bar">
-              <div
-                className="setup-progress__fill"
-                style={{ '--progress-value': `${(registeredCount / playerCount) * 100}%` } as CSSProperties}
-              />
+            <div className="setup-progress">
+              <progress className="setup-progress__native" value={registeredCount} max={playerCount} />
             </div>
-          </div>
-        </GlassCard>
+          </GlassCard>
 
-        <div className="setup-grid setup-grid--two">
-          <GlassCard className="voice-page__main">
-            <div className="voice-page__header">
-              <h2 className="feature-card__title">{currentPlayer.name}</h2>
-              <span className={`status-tag ${currentPlayer.registered ? 'status-tag--success' : 'status-tag--warn'}`}>
-                {currentPlayer.registered ? 'Готово' : 'В ожидании'}
-              </span>
-            </div>
-            <p className="feature-card__text">
-              Произнесите: "Я {currentPlayer.name}, игрок номер {currentPlayer.id}"
-            </p>
+          <div className="setup-grid setup-grid--voice">
+            <GlassCard className="voice-page__main">
+              <div className="voice-page__header">
+                <h2 className="voice-page__title">{currentPlayer.name}</h2>
+                <span className={`status-tag ${currentPlayer.registered ? 'status-tag--success' : 'status-tag--warn'}`}>
+                  {currentPlayer.registered ? 'Готово' : 'В ожидании'}
+                </span>
+              </div>
+              <p className="voice-page__prompt">
+                Произнесите: "Я {currentPlayer.name}, игрок номер {currentPlayer.id}"
+              </p>
 
-            <div className="voice-stage">
-              {isRecording && (
-                <div className="voice-page__recording">
-                  <span className="voice-stage__pulse" />
-                  <strong>Запись... {Math.ceil((100 - recordingProgress) / 33)}с</strong>
+              <div className="voice-stage">
+                {isRecording && (
+                  <div className="voice-page__recording">
+                    <span className="voice-stage__pulse" />
+                    <strong>Запись... {Math.ceil((100 - recordingProgress) / 33)}с</strong>
+                  </div>
+                )}
+                {!isRecording && currentPlayer.registered && (
+                  <div className="voice-page__status status-tag status-tag--success">Голос сохранен</div>
+                )}
+                {!isRecording && !currentPlayer.registered && (
+                  <div className="voice-page__status">Готово к записи</div>
+                )}
+              </div>
+
+              {!currentPlayer.registered && (
+                <div className="voice-page__actions">
+                  <Button variant="secondary" onClick={handleSkip} disabled={isRecording} fullWidth>
+                    Пропустить
+                  </Button>
+                  <Button onClick={handleStartRecording} disabled={isRecording} loading={isRecording} fullWidth>
+                    Записать
+                  </Button>
                 </div>
               )}
-              {!isRecording && currentPlayer.registered && (
-                <div className="voice-page__status status-tag status-tag--success">Голос сохранен</div>
-              )}
-              {!isRecording && !currentPlayer.registered && (
-                <div className="voice-page__status">Готово к записи</div>
-              )}
-            </div>
+            </GlassCard>
 
-            {!currentPlayer.registered && (
-              <div className="voice-page__actions">
-                <Button variant="secondary" onClick={handleSkip} disabled={isRecording} fullWidth>
-                  Пропустить
-                </Button>
-                <Button onClick={handleStartRecording} disabled={isRecording} loading={isRecording} fullWidth>
-                  Записать
-                </Button>
+            <GlassCard className="voice-page__list">
+              <h2 className="voice-page__title">Игровые места</h2>
+              <div className="voice-page__players">
+                {players.map((player, index) => (
+                  <button
+                    type="button"
+                    key={player.id}
+                    className={`voice-page__player ${index === currentIndex ? 'is-active' : ''} ${player.registered ? 'is-filled' : ''}`.trim()}
+                    onClick={() => !player.registered && setCurrentIndex(index)}
+                  >
+                    <span className="voice-page__player-id">{player.registered ? '✓' : player.id}</span>
+                    <span className="voice-page__player-meta">
+                      <strong>{player.name}</strong>
+                      <small>{player.registered ? 'Зарегистрирован' : 'Ожидает запись'}</small>
+                    </span>
+                  </button>
+                ))}
               </div>
-            )}
-          </GlassCard>
+            </GlassCard>
+          </div>
 
-          <GlassCard className="voice-page__list">
-            <h2 className="feature-card__title">Игровые места</h2>
-            <div className="voice-page__players">
-              {players.map((player, index) => (
-                <button
-                  type="button"
-                  key={player.id}
-                  className={`voice-page__player ${index === currentIndex ? 'is-active' : ''} ${player.registered ? 'is-filled' : ''}`.trim()}
-                  onClick={() => !player.registered && setCurrentIndex(index)}
-                >
-                  <span className="voice-page__player-id">{player.registered ? '✓' : player.id}</span>
-                  <span className="voice-page__player-meta">
-                    <strong>{player.name}</strong>
-                    <small>{player.registered ? 'Зарегистрирован' : 'Ожидает запись'}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-          </GlassCard>
-        </div>
-
-        <div className="setup-actions">
-          <Button
-            variant="secondary"
-            size="lg"
-            onClick={() => navigate('/setup/face-registration', { state: { playerCount } })}
-          >
-            Назад
-          </Button>
-          <Button
-            size="lg"
-            disabled={!allRegistered}
-            onClick={() => navigate('/setup/table-detection', { state: { playerCount, players } })}
-          >
-            {allRegistered ? 'Продолжить' : 'Завершите регистрацию'}
-          </Button>
+          <div className="setup-actions">
+            <Button
+              variant="secondary"
+              size="lg"
+              onClick={() => navigate('/setup/face-registration', { state: { playerCount } })}
+            >
+              Назад
+            </Button>
+            <Button
+              size="lg"
+              disabled={!allRegistered}
+              onClick={() => navigate('/setup/table-detection', { state: { playerCount, players } })}
+            >
+              {allRegistered ? 'Продолжить' : 'Завершите регистрацию'}
+            </Button>
+          </div>
         </div>
       </div>
     </div>

@@ -41,25 +41,16 @@ export function FaceIDScanner({ state, progress = 0, videoUrl }: FaceIDScannerPr
 
       <div className="face-scanner__veil" />
       <div className="face-scanner__center">
-        <div className="face-scanner__ring">
-          <div className="face-scanner__mesh" />
-          <div className="face-scanner__sweep" />
-          <div className="face-scanner__segments">
-            {Array.from({ length: 22 }).map((_, index) => (
-              <span
-                // eslint-disable-next-line react/no-array-index-key
-                key={index}
-                style={{ '--segment-index': String(index) } as CSSProperties}
-                className="face-scanner__segment"
-              />
-            ))}
-          </div>
-          {(state === 'success' || state === 'error') && (
-            <div className="face-scanner__result">
-              {state === 'success' ? '✓' : '✕'}
-            </div>
-          )}
+        <div className="face-scanner__halo" />
+        <div className="face-scanner__frame">
+          <div className="face-scanner__grid" />
+          {state === 'scanning' && <div className="face-scanner__scan-beam" />}
         </div>
+        {(state === 'success' || state === 'error') && (
+          <div className="face-scanner__result">
+            {state === 'success' ? '✓' : '✕'}
+          </div>
+        )}
       </div>
 
       <div className="face-scanner__bottom">
@@ -69,9 +60,7 @@ export function FaceIDScanner({ state, progress = 0, videoUrl }: FaceIDScannerPr
           </span>
           <span>{progressValue}%</span>
         </div>
-        <div className="face-scanner__progress">
-          <div className="face-scanner__progress-fill" />
-        </div>
+        <progress className="face-scanner__progress" value={progressValue} max={100} />
       </div>
     </div>
   );

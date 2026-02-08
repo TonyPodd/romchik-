@@ -34,55 +34,57 @@ export function PlayerCountPage() {
   return (
     <div className="setup-shell">
       <div className="setup-container">
-        <div className="setup-hero">
-          <h1 className="setup-title">Количество игроков</h1>
-          <p className="setup-subtitle">
-            Выберите стандартный формат или задайте кастомное число для тестового прогона.
-          </p>
-        </div>
-
-        <div className="preset-grid">
-          {presets.map((preset) => (
-            <button
-              type="button"
-              key={preset.count}
-              className={`preset-card ${selectedPreset === preset.count ? 'preset-card--active' : ''}`.trim()}
-              onClick={() => {
-                setSelectedPreset(preset.count);
-                setCustomCount('');
-              }}
-            >
-              <div className="preset-card__count">{preset.count}</div>
-              <div className="feature-card__title">Игроков</div>
-              <div className="preset-card__hint">{preset.roles}</div>
-            </button>
-          ))}
-        </div>
-
-        <GlassCard className="stack panel-pad">
-          <div>
-            <h3 className="feature-card__title">Кастомное значение</h3>
-            <p className="feature-card__text">
-              Значение используется для отладки интерфейса и пайплайна регистрации.
+        <div className="setup-wizard">
+          <div className="setup-hero">
+            <h1 className="setup-title">Количество игроков</h1>
+            <p className="setup-subtitle">
+              Выберите стандартный формат или задайте кастомное число для тестового прогона.
             </p>
           </div>
-          <Input
-            type="number"
-            placeholder="1-50"
-            value={customCount}
-            onChange={(event) => handleCustomChange(event.target.value)}
-            min={1}
-            max={50}
-          />
-        </GlassCard>
 
-        <div className="setup-actions">
-          <Button variant="secondary" size="lg" onClick={() => navigate('/')}>
-            Назад
-          </Button>
-          <Button size="lg" disabled={!canContinue} onClick={handleContinue}>
-            Продолжить
-          </Button>
+          <div className="preset-grid">
+            {presets.map((preset) => (
+              <button
+                type="button"
+                key={preset.count}
+                className={`preset-card ${selectedPreset === preset.count ? 'preset-card--active' : ''}`.trim()}
+                onClick={() => {
+                  setSelectedPreset(preset.count);
+                  setCustomCount('');
+                }}
+              >
+                <div className="preset-card__count">{preset.count}</div>
+                <div className="feature-card__title">Игроков</div>
+                <div className="preset-card__hint">{preset.roles}</div>
+              </button>
+            ))}
+          </div>
+
+          <GlassCard className="stack panel-pad">
+            <div>
+              <h3 className="feature-card__title">Кастомное значение</h3>
+              <p className="feature-card__text">
+                Значение используется для отладки интерфейса и пайплайна регистрации.
+              </p>
+            </div>
+            <Input
+              type="number"
+              placeholder="1-50"
+              value={customCount}
+              onChange={(event) => handleCustomChange(event.target.value)}
+              min={1}
+              max={50}
+            />
+          </GlassCard>
+
+          <div className="setup-actions">
+            <Button variant="secondary" size="lg" onClick={() => navigate('/')}>
+              Назад
+            </Button>
+            <Button size="lg" disabled={!canContinue} onClick={handleContinue}>
+              Продолжить
+            </Button>
+          </div>
         </div>
       </div>
     </div>

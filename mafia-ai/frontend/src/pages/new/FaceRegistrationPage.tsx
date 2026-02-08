@@ -1,6 +1,7 @@
-import { CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { FaceIDScanner } from '../../components/FaceIDScanner';
+import { SetupStageHeader } from '../../components/SetupStageHeader';
 import { Button } from '../../components/ui/Button';
 import { GlassCard } from '../../components/ui/GlassCard';
 import { Input } from '../../components/ui/Input';
@@ -372,149 +373,147 @@ export function FaceRegistrationPage() {
   return (
     <div className="setup-shell">
       <div className="setup-container">
-        <GlassCard className="stack panel-pad">
-          <div className="face-reg__header">
-            <div>
-              <h1 className="feature-card__title">Регистрация лиц</h1>
-              <p className="feature-card__text">
-                Назначайте профили из базы или регистрируйте новые лица по каждому месту.
-              </p>
+        <div className="setup-wizard">
+          <SetupStageHeader
+            current="faces"
+            title="Регистрация лиц игроков"
+            subtitle="Выберите лица из базы или запишите новые профили для каждого места."
+          />
+
+          <GlassCard className="face-reg__summary">
+            <div className="face-reg__summary-row">
+              <div className="face-reg__summary-meta">
+                <span>Заполнено мест</span>
+                <strong>{registeredCount} / {playerCount}</strong>
+              </div>
+              <Button variant="secondary" onClick={() => void handleOpenDatabase()}>
+                База лиц ({registeredPlayers.length})
+              </Button>
             </div>
-            <Button variant="secondary" onClick={() => void handleOpenDatabase()}>
-              База лиц ({registeredPlayers.length})
+            <div className="setup-progress">
+              <progress className="setup-progress__native" value={registeredCount} max={playerCount} />
+            </div>
+          </GlassCard>
+
+          <div className="setup-grid setup-grid--face">
+            <GlassCard className="face-reg__main">
+              <div className="face-reg__current">
+                <h2 className="face-reg__title">Место {currentPlayer.id}</h2>
+                <span className={`status-tag ${currentPlayer.registered ? 'status-tag--success' : 'status-tag--warn'}`}>
+                  {currentPlayer.registered ? 'Заполнено' : 'Ожидает'}
+                </span>
+              </div>
+
+              <Input
+                label="Имя игрока"
+                value={currentPlayer.name}
+                placeholder="Введите имя"
+                onChange={(event) => handleNameChange(event.target.value)}
+                disabled={scanState === 'scanning'}
+                error={error}
+              />
+
+              <FaceIDScanner
+                state={currentPlayer.registered ? 'success' : scanState}
+                progress={scanProgress}
+                videoUrl={videoRunning ? api.getVideoStreamUrl() : undefined}
+              />
+
+              <div className={`face-reg__hint ${scanState === 'error' ? 'is-error' : ''}`.trim()}>
+                {scanState === 'scanning' ? hint : DEFAULT_HINT}
+              </div>
+
+              <div className="face-reg__actions">
+                <Button
+                  onClick={() => void handleStartScan()}
+                  disabled={scanState === 'scanning' || !currentPlayer.name.trim()}
+                  fullWidth
+                >
+                  Начать сканирование
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => (scanState === 'scanning' ? void handleCancelScan() : void handleOpenDatabase())}
+                  fullWidth
+                >
+                  {scanState === 'scanning' ? 'Отменить' : 'Выбрать из базы'}
+                </Button>
+              </div>
+            </GlassCard>
+
+            <GlassCard className="face-reg__slots">
+              <h2 className="face-reg__title">Игровые места</h2>
+              <div className="face-reg__slot-list">
+                {players.map((player, index) => (
+                  <button
+                    type="button"
+                    key={player.id}
+                    className={`face-reg__slot-item ${index === currentIndex ? 'is-active' : ''} ${player.registered ? 'is-filled' : ''}`.trim()}
+                    onClick={() => {
+                      if (scanState !== 'scanning') {
+                        setCurrentIndex(index);
+                      }
+                    }}
+                  >
+                    <div className="face-reg__slot-thumb">
+                      {player.thumbUrl ? (
+                        <img src={player.thumbUrl} alt={player.name || `Игрок ${player.id}`} />
+                      ) : (
+                        <span>{player.id}</span>
+                      )}
+                    </div>
+
+                    <div className="face-reg__slot-meta">
+                      <strong>{player.name || `Игрок ${player.id}`}</strong>
+                      <span>
+                        {player.registered
+                          ? player.source === 'database'
+                            ? 'Назначен из базы'
+                            : 'Новый профиль'
+                          : 'Не зарегистрирован'}
+                      </span>
+                    </div>
+
+                    {player.registered && scanState !== 'scanning' && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          clearSlot(index);
+                        }}
+                      >
+                        Сброс
+                      </Button>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </GlassCard>
+          </div>
+
+          <div className="setup-actions">
+            <Button
+              variant="secondary"
+              size="lg"
+              onClick={() => {
+                void stopVideoStream();
+                navigate('/setup/players');
+              }}
+            >
+              Назад
+            </Button>
+            <Button
+              size="lg"
+              disabled={!allRegistered}
+              onClick={() => {
+                void stopVideoStream();
+                navigate('/setup/voice');
+              }}
+            >
+              {allRegistered ? 'Продолжить' : 'Завершите регистрацию всех игроков'}
             </Button>
           </div>
-
-          <div className="setup-progress">
-            <div className="setup-progress__row">
-              <span>Заполнено мест</span>
-              <span>{registeredCount} / {playerCount}</span>
-            </div>
-            <div className="setup-progress__bar">
-              <div
-                className="setup-progress__fill"
-                style={{ '--progress-value': `${(registeredCount / playerCount) * 100}%` } as CSSProperties}
-              />
-            </div>
-          </div>
-        </GlassCard>
-
-        <div className="setup-grid setup-grid--two">
-          <GlassCard className="face-reg__main">
-            <div className="face-reg__current">
-              <h2 className="feature-card__title">Место {currentPlayer.id}</h2>
-              <span className={`status-tag ${currentPlayer.registered ? 'status-tag--success' : 'status-tag--warn'}`}>
-                {currentPlayer.registered ? 'Заполнено' : 'Ожидает'}
-              </span>
-            </div>
-
-            <Input
-              label="Имя игрока"
-              value={currentPlayer.name}
-              placeholder="Введите имя"
-              onChange={(event) => handleNameChange(event.target.value)}
-              disabled={scanState === 'scanning'}
-              error={error}
-            />
-
-            <FaceIDScanner
-              state={currentPlayer.registered ? 'success' : scanState}
-              progress={scanProgress}
-              videoUrl={videoRunning ? api.getVideoStreamUrl() : undefined}
-            />
-
-            <div className="face-reg__hint">{scanState === 'scanning' ? hint : DEFAULT_HINT}</div>
-
-            <div className="face-reg__actions">
-              <Button
-                onClick={() => void handleStartScan()}
-                disabled={scanState === 'scanning' || !currentPlayer.name.trim()}
-                fullWidth
-              >
-                Начать сканирование
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => (scanState === 'scanning' ? void handleCancelScan() : void handleOpenDatabase())}
-                fullWidth
-              >
-                {scanState === 'scanning' ? 'Отменить' : 'Выбрать из базы'}
-              </Button>
-            </div>
-          </GlassCard>
-
-          <GlassCard className="face-reg__slots">
-            <h2 className="feature-card__title">Игровые места</h2>
-            <div className="face-reg__slot-list">
-              {players.map((player, index) => (
-                <button
-                  type="button"
-                  key={player.id}
-                  className={`face-reg__slot-item ${index === currentIndex ? 'is-active' : ''} ${player.registered ? 'is-filled' : ''}`.trim()}
-                  onClick={() => {
-                    if (scanState !== 'scanning') {
-                      setCurrentIndex(index);
-                    }
-                  }}
-                >
-                  <div className="face-reg__slot-thumb">
-                    {player.thumbUrl ? (
-                      <img src={player.thumbUrl} alt={player.name || `Игрок ${player.id}`} />
-                    ) : (
-                      <span>{player.id}</span>
-                    )}
-                  </div>
-
-                  <div className="face-reg__slot-meta">
-                    <strong>{player.name || `Игрок ${player.id}`}</strong>
-                    <span>
-                      {player.registered
-                        ? player.source === 'database'
-                          ? 'Назначен из базы'
-                          : 'Новый профиль'
-                        : 'Не зарегистрирован'}
-                    </span>
-                  </div>
-
-                  {player.registered && scanState !== 'scanning' && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        clearSlot(index);
-                      }}
-                    >
-                      Сброс
-                    </Button>
-                  )}
-                </button>
-              ))}
-            </div>
-          </GlassCard>
-        </div>
-
-        <div className="setup-actions">
-          <Button
-            variant="secondary"
-            size="lg"
-            onClick={() => {
-              void stopVideoStream();
-              navigate('/setup/players');
-            }}
-          >
-            Назад
-          </Button>
-          <Button
-            size="lg"
-            disabled={!allRegistered}
-            onClick={() => {
-              void stopVideoStream();
-              navigate('/setup/voice');
-            }}
-          >
-            {allRegistered ? 'Продолжить' : 'Завершите регистрацию всех игроков'}
-          </Button>
         </div>
       </div>
 
