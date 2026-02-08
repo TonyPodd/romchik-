@@ -823,6 +823,132 @@ async def voice_identify(body: _VoiceIdentifyIn):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
+class _VoiceTestIdentifyIn(BaseModel):
+    expected_player_id: int
+    audio: List[float]
+    sample_rate: int = 16000
+
+
+@app.post("/voice/test/identify")
+async def voice_test_identify(body: _VoiceTestIdentifyIn):
+    """
+    Тестовый роут проверки корректности распознавания.
+
+    body: {
+        "expected_player_id": int,
+        "audio": List[float],
+        "sample_rate": int (optional, default 16000)
+    }
+
+    Returns:
+    {
+        "ok": bool,
+        "correct": bool,
+        "expected_player_id": int,
+        "expected_player_name": str | null,
+        "predicted_player_id": int | null,
+        "predicted_player_name": str | null,
+        "confidence": float,
+        "top_matches": [{"player_id": int, "player_name": str, "score": float}]
+    }
+    """
+    try:
+        vs = get_voice_service()
+        audio_array = np.array(body.audio, dtype=np.float32)
+        expected_id = int(body.expected_player_id)
+
+        prediction = vs.identify_speaker(audio_array, sr=body.sample_rate)
+        top_matches = vs.identify_top_k(audio_array, sr=body.sample_rate, k=3)
+        expected_profile = vs.profiles.get(expected_id)
+
+        predicted_id: Optional[int] = None
+        predicted_name: Optional[str] = None
+        confidence = 0.0
+        if prediction:
+            predicted_id, predicted_name, confidence = prediction
+
+        return {
+            "ok": True,
+            "correct": bool(predicted_id == expected_id),
+            "expected_player_id": expected_id,
+            "expected_player_name": expected_profile.player_name if expected_profile else None,
+            "predicted_player_id": predicted_id,
+            "predicted_player_name": predicted_name,
+            "confidence": float(confidence),
+            "top_matches": top_matches,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+class _VoiceTestSampleIn(BaseModel):
+    expected_player_id: int
+    audio: List[float]
+    sample_rate: int = 16000
+
+
+class _VoiceTestEvaluateIn(BaseModel):
+    samples: List[_VoiceTestSampleIn]
+
+
+@app.post("/voice/test/evaluate")
+async def voice_test_evaluate(body: _VoiceTestEvaluateIn):
+    """
+    Батч-оценка качества распознавания на наборе тестовых сэмплов.
+
+    body: {
+      "samples": [
+        {"expected_player_id": int, "audio": List[float], "sample_rate": int}
+      ]
+    }
+    """
+    try:
+        vs = get_voice_service()
+        results: List[Dict[str, Any]] = []
+        correct = 0
+
+        for index, sample in enumerate(body.samples):
+            audio_array = np.array(sample.audio, dtype=np.float32)
+            expected_id = int(sample.expected_player_id)
+            prediction = vs.identify_speaker(audio_array, sr=sample.sample_rate)
+            top_matches = vs.identify_top_k(audio_array, sr=sample.sample_rate, k=3)
+
+            predicted_id: Optional[int] = None
+            predicted_name: Optional[str] = None
+            confidence = 0.0
+            if prediction:
+                predicted_id, predicted_name, confidence = prediction
+
+            is_correct = predicted_id == expected_id
+            if is_correct:
+                correct += 1
+
+            results.append(
+                {
+                    "index": index,
+                    "correct": bool(is_correct),
+                    "expected_player_id": expected_id,
+                    "predicted_player_id": predicted_id,
+                    "predicted_player_name": predicted_name,
+                    "confidence": float(confidence),
+                    "top_matches": top_matches,
+                }
+            )
+
+        total = len(results)
+        accuracy = float(correct / total) if total else 0.0
+
+        return {
+            "ok": True,
+            "total": total,
+            "correct": correct,
+            "accuracy": accuracy,
+            "results": results,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/voice/profiles")
 async def voice_profiles():
     """

@@ -6,6 +6,14 @@
   gap: 0.74rem;
 }
 
+.voice-page__list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
 .voice-page__summary-row {
   display: flex;
   justify-content: space-between;
@@ -49,9 +57,54 @@
   font-size: 0.92rem;
 }
 
+.voice-stage__pulse--test {
+  border-color: rgba(127, 185, 255, 0.58);
+  background: radial-gradient(circle at 48% 36%, rgba(127, 185, 255, 0.45), rgba(50, 96, 168, 0.2));
+  box-shadow: 0 0 0 0 rgba(96, 151, 255, 0.35);
+}
+
 .voice-page__status {
   color: var(--text-soft);
   font-size: 0.9rem;
+}
+
+.voice-page__capture-progress {
+  width: min(360px, 90%);
+}
+
+.voice-page__error {
+  border: 1px solid rgba(240, 129, 150, 0.44);
+  background: rgba(240, 129, 150, 0.14);
+  color: #ffdbe4;
+  border-radius: 12px;
+  padding: 0.52rem 0.66rem;
+  font-size: 0.82rem;
+}
+
+.voice-page__test-result {
+  border: 1px solid rgba(179, 191, 183, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.58rem 0.7rem;
+  display: grid;
+  gap: 0.18rem;
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}
+
+.voice-page__test-result strong {
+  color: var(--text-main);
+  font-size: 0.84rem;
+}
+
+.voice-page__test-result.is-success {
+  border-color: rgba(126, 245, 182, 0.42);
+  background: rgba(47, 217, 136, 0.12);
+}
+
+.voice-page__test-result.is-fail {
+  border-color: rgba(240, 129, 150, 0.44);
+  background: rgba(240, 129, 150, 0.12);
 }
 
 .voice-page__actions {

@@ -174,3 +174,127 @@ export async function resetPlayers(): Promise<{ ok: boolean }> {
   });
   return res.json();
 }
+
+// Voice API
+export interface VoiceProfile {
+  player_id: number;
+  player_name: string;
+  samples_count: number;
+  created_at: number;
+}
+
+export interface VoiceRegisterResponse {
+  ok: boolean;
+  samples_registered?: number;
+  error?: string;
+}
+
+export interface VoiceIdentifyResponse {
+  ok: boolean;
+  player_id?: number | null;
+  player_name?: string | null;
+  confidence?: number;
+  error?: string;
+}
+
+export interface VoiceTestMatch {
+  player_id: number;
+  player_name: string;
+  score: number;
+}
+
+export interface VoiceTestIdentifyResponse {
+  ok: boolean;
+  correct?: boolean;
+  expected_player_id?: number;
+  expected_player_name?: string | null;
+  predicted_player_id?: number | null;
+  predicted_player_name?: string | null;
+  confidence?: number;
+  top_matches?: VoiceTestMatch[];
+  error?: string;
+}
+
+export async function voiceRegister(
+  playerId: number,
+  playerName: string,
+  audioSamples: number[][],
+  sampleRate: number = 16000,
+): Promise<VoiceRegisterResponse> {
+  const res = await fetchWithTimeout(
+    `${API_BASE}/voice/register`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        player_id: playerId,
+        player_name: playerName,
+        audio_samples: audioSamples,
+        sample_rate: sampleRate,
+      }),
+    },
+    30000,
+  );
+  return res.json();
+}
+
+export async function voiceIdentify(
+  audio: number[],
+  sampleRate: number = 16000,
+): Promise<VoiceIdentifyResponse> {
+  const res = await fetchWithTimeout(
+    `${API_BASE}/voice/identify`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        audio,
+        sample_rate: sampleRate,
+      }),
+    },
+    20000,
+  );
+  return res.json();
+}
+
+export async function voiceTestIdentify(
+  expectedPlayerId: number,
+  audio: number[],
+  sampleRate: number = 16000,
+): Promise<VoiceTestIdentifyResponse> {
+  const res = await fetchWithTimeout(
+    `${API_BASE}/voice/test/identify`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expected_player_id: expectedPlayerId,
+        audio,
+        sample_rate: sampleRate,
+      }),
+    },
+    20000,
+  );
+  return res.json();
+}
+
+export async function voiceListProfiles(): Promise<{ ok: boolean; profiles: VoiceProfile[]; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/voice/profiles`);
+  return res.json();
+}
+
+export async function voiceDeleteProfile(playerId: number): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/voice/profile/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ player_id: playerId }),
+  });
+  return res.json();
+}
+
+export async function voiceClearProfiles(): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/voice/clear`, {
+    method: 'POST',
+  });
+  return res.json();
+}

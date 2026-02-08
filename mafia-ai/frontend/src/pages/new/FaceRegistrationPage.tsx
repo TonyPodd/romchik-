@@ -503,7 +503,15 @@ export function FaceRegistrationPage() {
               disabled={!allRegistered}
               onClick={() => {
                 void stopVideoStream();
-                navigate('/setup/voice');
+                navigate('/setup/voice', {
+                  state: {
+                    playerCount,
+                    players: players.map((player) => ({
+                      id: player.id,
+                      name: player.name?.trim() || `Игрок ${player.id}`,
+                    })),
+                  },
+                });
               }}
             >
               {allRegistered ? 'Продолжить' : 'Завершите регистрацию всех игроков'}
