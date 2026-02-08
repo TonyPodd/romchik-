@@ -450,6 +450,10 @@ class GestureStream:
             E = np.stack(buckets[d]["embs"], axis=0)
             buckets[d]["norm"] = E / (np.linalg.norm(E, axis=1, keepdims=True) + 1e-6)
 
+        # Минимальный отрыв лучшего кандидата от второго (при близких по схожести игроках).
+        # Слишком большой отрыв убивает распознавание, когда в базе >1 игрок.
+        confidence_margin = float(os.getenv("FACE_MATCH_MARGIN", "0.03"))
+
         for f in faces:
             emb = f["embedding"].astype(np.float32)
             d = int(emb.shape[0])
@@ -466,8 +470,10 @@ class GestureStream:
                 is_confident = True
                 if len(sorted_indices) > 1:
                     second_best_sim = float(sims[sorted_indices[1]])
-                    # Require at least 0.08 difference from second best
-                    is_confident = (best_sim - second_best_sim) >= 0.08
+                    margin = best_sim - second_best_sim
+                    # Жесткий margin применяем только в пограничных случаях.
+                    if best_sim < (self._face.sim_threshold + 0.10):
+                        is_confident = margin >= confidence_margin
 
                 simv = best_sim
                 # Only assign ID if similarity is above threshold AND match is confident
