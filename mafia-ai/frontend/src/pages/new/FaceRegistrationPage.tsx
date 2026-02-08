@@ -372,29 +372,16 @@ export function FaceRegistrationPage() {
 
   return (
     <div className="setup-shell">
-      <div className="setup-container">
-        <div className="setup-wizard">
+      <div className="setup-container setup-container--with-stage">
+        <GlassCard className="setup-stage-shell">
           <SetupStageHeader
             current="faces"
             title="Регистрация лиц игроков"
             subtitle="Выберите лица из базы или запишите новые профили для каждого места."
           />
+        </GlassCard>
 
-          <GlassCard className="face-reg__summary">
-            <div className="face-reg__summary-row">
-              <div className="face-reg__summary-meta">
-                <span>Заполнено мест</span>
-                <strong>{registeredCount} / {playerCount}</strong>
-              </div>
-              <Button variant="secondary" onClick={() => void handleOpenDatabase()}>
-                База лиц ({registeredPlayers.length})
-              </Button>
-            </div>
-            <div className="setup-progress">
-              <progress className="setup-progress__native" value={registeredCount} max={playerCount} />
-            </div>
-          </GlassCard>
-
+        <div className="setup-wizard">
           <div className="setup-grid setup-grid--face">
             <GlassCard className="face-reg__main">
               <div className="face-reg__current">
@@ -442,7 +429,15 @@ export function FaceRegistrationPage() {
             </GlassCard>
 
             <GlassCard className="face-reg__slots">
-              <h2 className="face-reg__title">Игровые места</h2>
+              <div className="face-reg__slots-head">
+                <div className="face-reg__slots-title">
+                  <h2 className="face-reg__title">Игровые места</h2>
+                  <span>{registeredCount} / {playerCount}</span>
+                </div>
+                <Button variant="secondary" size="sm" onClick={() => void handleOpenDatabase()}>
+                  База лиц ({registeredPlayers.length})
+                </Button>
+              </div>
               <div className="face-reg__slot-list">
                 {players.map((player, index) => (
                   <button

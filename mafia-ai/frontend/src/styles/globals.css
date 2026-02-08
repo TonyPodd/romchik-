@@ -43,9 +43,9 @@ body {
   font-family: "Manrope", "SF Pro Display", "Segoe UI", sans-serif;
   color: var(--text-main);
   background:
-    radial-gradient(34rem 18rem at -5% -12%, rgba(255, 255, 255, 0.2), transparent 62%),
-    radial-gradient(40rem 24rem at 12% 82%, rgba(47, 217, 136, 0.12), transparent 68%),
-    radial-gradient(34rem 18rem at 102% 8%, rgba(169, 179, 173, 0.1), transparent 64%),
+    radial-gradient(30rem 16rem at -5% -12%, rgba(255, 255, 255, 0.12), transparent 64%),
+    radial-gradient(34rem 20rem at 12% 82%, rgba(47, 217, 136, 0.08), transparent 70%),
+    radial-gradient(30rem 16rem at 102% 8%, rgba(169, 179, 173, 0.07), transparent 66%),
     linear-gradient(165deg, #010204, #030507 48%, #05070a);
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
@@ -84,10 +84,10 @@ a {
 }
 
 .ui-glass-card {
-  background: linear-gradient(155deg, rgba(17, 21, 25, 0.82), rgba(11, 14, 18, 0.88));
-  border: 1px solid var(--border-soft);
+  background: linear-gradient(155deg, rgba(21, 27, 33, 0.48), rgba(9, 12, 16, 0.54));
+  border: 1px solid rgba(196, 210, 201, 0.16);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-soft);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
   backdrop-filter: blur(14px);
 }
 
@@ -243,19 +243,30 @@ a {
   width: min(1160px, 100%);
 }
 
+.setup-container--with-stage {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.setup-stage-shell {
+  padding: 0.9rem 1rem;
+  border-radius: 24px;
+}
+
 .setup-wizard {
   position: relative;
   overflow: hidden;
   border-radius: var(--radius-lg);
   border: 1px solid rgba(176, 189, 181, 0.24);
   background:
-    radial-gradient(circle at 8% 16%, rgba(47, 217, 136, 0.1), transparent 28%),
-    radial-gradient(circle at 52% -14%, rgba(255, 255, 255, 0.1), transparent 38%),
-    linear-gradient(160deg, rgba(8, 11, 14, 0.92), rgba(9, 12, 16, 0.92));
+    radial-gradient(circle at 8% 16%, rgba(47, 217, 136, 0.07), transparent 28%),
+    radial-gradient(circle at 52% -14%, rgba(255, 255, 255, 0.07), transparent 38%),
+    linear-gradient(160deg, rgba(8, 11, 14, 0.7), rgba(9, 12, 16, 0.72));
   box-shadow: var(--shadow-strong);
   padding: clamp(0.9rem, 2vw, 1.35rem);
   display: grid;
   gap: 1rem;
+  backdrop-filter: blur(12px);
 }
 
 .setup-wizard::before {
@@ -264,7 +275,7 @@ a {
   inset: 0;
   pointer-events: none;
   background: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px) 0 0 / 13px 13px;
-  opacity: 0.55;
+  opacity: 0.24;
 }
 
 .setup-wizard::after {
@@ -328,7 +339,7 @@ a {
   color: #e2ffee;
   border-color: rgba(126, 245, 182, 0.58);
   background: linear-gradient(145deg, rgba(30, 143, 94, 0.48), rgba(47, 217, 136, 0.24));
-  box-shadow: 0 0 28px rgba(47, 217, 136, 0.2);
+  box-shadow: 0 0 16px rgba(47, 217, 136, 0.14);
 }
 
 .stage-head__titles h1 {
@@ -372,6 +383,7 @@ a {
 
 .setup-grid--face {
   grid-template-columns: minmax(0, 1.45fr) minmax(290px, 1fr);
+  align-items: start;
 }
 
 .setup-grid--voice {

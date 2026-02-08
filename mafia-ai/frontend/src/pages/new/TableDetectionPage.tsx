@@ -35,14 +35,16 @@ export function TableDetectionPage() {
 
   return (
     <div className="setup-shell">
-      <div className="setup-container">
-        <div className="setup-wizard">
+      <div className="setup-container setup-container--with-stage">
+        <GlassCard className="setup-stage-shell">
           <SetupStageHeader
             current="table"
             title="Определение стола"
             subtitle="Проверьте кадр и подтвердите игровую область перед началом партии."
           />
+        </GlassCard>
 
+        <div className="setup-wizard">
           <div className="setup-grid setup-grid--table">
             <GlassCard className="table-page__camera">
               <h2 className="table-page__title">Камера</h2>

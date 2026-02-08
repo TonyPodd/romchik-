@@ -41,11 +41,6 @@ export function FaceIDScanner({ state, progress = 0, videoUrl }: FaceIDScannerPr
 
       <div className="face-scanner__veil" />
       <div className="face-scanner__center">
-        <div className="face-scanner__halo" />
-        <div className="face-scanner__frame">
-          <div className="face-scanner__grid" />
-          {state === 'scanning' && <div className="face-scanner__scan-beam" />}
-        </div>
         {(state === 'success' || state === 'error') && (
           <div className="face-scanner__result">
             {state === 'success' ? '✓' : '✕'}

@@ -1,32 +1,16 @@
-.face-reg__summary,
 .face-reg__main,
 .face-reg__slots {
   padding: 1rem;
-  display: grid;
   gap: 0.8rem;
 }
 
-.face-reg__summary-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.7rem;
-  flex-wrap: wrap;
-}
-
-.face-reg__summary-meta {
+.face-reg__main {
   display: grid;
-  gap: 0.16rem;
 }
 
-.face-reg__summary-meta span {
-  color: var(--text-soft);
-  font-size: 0.78rem;
-}
-
-.face-reg__summary-meta strong {
-  font-size: 1rem;
-  letter-spacing: 0.01em;
+.face-reg__slots {
+  display: flex;
+  flex-direction: column;
 }
 
 .face-reg__current {
@@ -44,10 +28,10 @@
 
 .face-reg__hint {
   border-radius: 12px;
-  border: 1px solid rgba(126, 245, 182, 0.28);
-  background: rgba(47, 217, 136, 0.12);
+  border: 1px solid rgba(126, 245, 182, 0.22);
+  background: rgba(47, 217, 136, 0.08);
   color: #d5f8e5;
-  padding: 0.6rem 0.74rem;
+  padding: 0.54rem 0.7rem;
   font-size: 0.82rem;
 }
 
@@ -64,10 +48,29 @@
 }
 
 .face-reg__slot-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  max-height: 620px;
+  max-height: 560px;
   overflow: auto;
+  min-height: 0;
+}
+
+.face-reg__slots-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 0.65rem;
+}
+
+.face-reg__slots-title {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.face-reg__slots-title span {
+  color: var(--text-soft);
+  font-size: 0.78rem;
 }
 
 .face-reg__slot-item {
@@ -76,23 +79,24 @@
   grid-template-columns: 50px minmax(0, 1fr) auto;
   gap: 0.62rem;
   align-items: center;
-  border: 1px solid rgba(179, 191, 183, 0.24);
+  border: 1px solid rgba(179, 191, 183, 0.2);
   border-radius: 13px;
-  padding: 0.58rem;
-  background: rgba(255, 255, 255, 0.03);
+  padding: 0.52rem;
+  background: rgba(255, 255, 255, 0.02);
   color: inherit;
   text-align: left;
   transition: border-color 0.16s ease, background 0.16s ease;
+  backdrop-filter: blur(5px);
 }
 
 .face-reg__slot-item.is-active {
-  border-color: rgba(126, 245, 182, 0.52);
-  background: rgba(47, 217, 136, 0.16);
+  border-color: rgba(126, 245, 182, 0.4);
+  background: rgba(47, 217, 136, 0.1);
 }
 
 .face-reg__slot-item.is-filled {
-  border-color: rgba(126, 245, 182, 0.34);
-  background: rgba(47, 217, 136, 0.1);
+  border-color: rgba(126, 245, 182, 0.3);
+  background: rgba(47, 217, 136, 0.07);
 }
 
 .face-reg__slot-thumb {
@@ -234,10 +238,14 @@
 }
 
 @media (max-width: 760px) {
-  .face-reg__summary,
   .face-reg__main,
   .face-reg__slots {
     padding: 0.84rem;
+  }
+
+  .face-reg__slots-head {
+    flex-wrap: wrap;
+    align-items: center;
   }
 
   .face-reg__slot-item {

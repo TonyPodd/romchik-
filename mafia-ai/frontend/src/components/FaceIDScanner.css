@@ -37,8 +37,8 @@
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(to top, rgba(4, 6, 8, 0.68), rgba(4, 6, 8, 0.3) 44%, rgba(4, 6, 8, 0.52)),
-    radial-gradient(circle at center, rgba(40, 169, 109, 0.08), transparent 65%);
+    linear-gradient(to top, rgba(4, 6, 8, 0.54), rgba(4, 6, 8, 0.16) 45%, rgba(4, 6, 8, 0.42)),
+    radial-gradient(circle at center, rgba(40, 169, 109, 0.06), transparent 66%);
 }
 
 .face-scanner__center {
@@ -49,80 +49,20 @@
   pointer-events: none;
 }
 
-.face-scanner__halo {
-  position: absolute;
-  width: min(74%, 360px);
-  aspect-ratio: 1;
-  border-radius: 999px;
-  background: conic-gradient(
-    from -90deg,
-    var(--scanner-accent) var(--scan-progress),
-    rgba(187, 200, 192, 0.24) 0
-  );
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 10px), #000 calc(100% - 9px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 10px), #000 calc(100% - 9px));
-  opacity: 0.82;
-  animation: halo-spin 9s linear infinite;
-}
-
-.face-scanner--idle .face-scanner__halo {
-  animation: none;
-  opacity: 0.54;
-}
-
-.face-scanner__frame {
-  position: relative;
-  width: min(46%, 220px);
-  aspect-ratio: 0.78;
-  border-radius: 26px;
-  border: 1px solid rgba(177, 202, 186, 0.4);
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 50% 0%, rgba(126, 245, 182, 0.1), transparent 56%),
-    linear-gradient(155deg, rgba(21, 30, 27, 0.58), rgba(9, 12, 14, 0.74));
-  box-shadow:
-    0 0 0 1px rgba(177, 202, 186, 0.2) inset,
-    0 20px 38px rgba(0, 0, 0, 0.38);
-}
-
-.face-scanner--scanning .face-scanner__frame {
-  animation: frame-breathe 2.4s ease-in-out infinite;
-}
-
-.face-scanner__grid {
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(rgba(158, 195, 173, 0.16) 1px, transparent 1px) 0 0 / 100% 18px,
-    linear-gradient(90deg, rgba(158, 195, 173, 0.14) 1px, transparent 1px) 0 0 / 18px 100%;
-  opacity: 0.3;
-}
-
-.face-scanner__scan-beam {
-  position: absolute;
-  left: 6%;
-  right: 6%;
-  top: 8%;
-  height: 3px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, transparent, var(--scanner-accent), transparent);
-  box-shadow: 0 0 14px rgba(118, 219, 167, 0.8);
-  animation: face-scan 2.1s ease-in-out infinite;
-}
-
 .face-scanner__result {
   position: absolute;
-  width: 70px;
-  height: 70px;
+  width: 62px;
+  height: 62px;
   border-radius: 999px;
   display: grid;
   place-items: center;
-  font-size: 2.2rem;
+  font-size: 1.9rem;
   font-weight: 700;
   color: #fff;
-  background: rgba(6, 10, 12, 0.74);
+  background: rgba(6, 10, 12, 0.62);
   border: 1px solid rgba(182, 207, 191, 0.8);
-  box-shadow: 0 0 30px rgba(126, 245, 182, 0.32);
+  box-shadow: 0 0 20px rgba(126, 245, 182, 0.24);
+  backdrop-filter: blur(8px);
 }
 
 .face-scanner__bottom {
@@ -132,6 +72,11 @@
   bottom: 14px;
   display: grid;
   gap: 9px;
+  border: 1px solid rgba(182, 198, 190, 0.14);
+  border-radius: 14px;
+  padding: 0.42rem 0.56rem;
+  background: rgba(8, 12, 16, 0.26);
+  backdrop-filter: blur(6px);
 }
 
 .face-scanner__meta {
@@ -163,57 +108,4 @@
 .face-scanner__progress::-moz-progress-bar {
   border-radius: 999px;
   background: linear-gradient(90deg, #2ac47b, #7ef5b6);
-}
-
-.face-scanner--success .face-scanner__progress::-webkit-progress-value,
-.face-scanner--success .face-scanner__progress::-moz-progress-bar {
-  background: linear-gradient(90deg, #2bbf7a, #6de7a6);
-}
-
-.face-scanner--error .face-scanner__progress::-webkit-progress-value,
-.face-scanner--error .face-scanner__progress::-moz-progress-bar {
-  background: linear-gradient(90deg, #cc5d74, #ef879d);
-}
-
-@keyframes face-scan {
-  0% {
-    top: 10%;
-    opacity: 0;
-  }
-  14% {
-    opacity: 1;
-  }
-  86% {
-    opacity: 1;
-  }
-  100% {
-    top: 86%;
-    opacity: 0;
-  }
-}
-
-@keyframes halo-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes frame-breathe {
-  0%,
-  100% {
-    transform: scale(0.985);
-  }
-  50% {
-    transform: scale(1.01);
-  }
-}
-
-@media (max-width: 760px) {
-  .face-scanner__halo {
-    width: min(80%, 310px);
-  }
-
-  .face-scanner__frame {
-    width: min(50%, 200px);
-  }
 }

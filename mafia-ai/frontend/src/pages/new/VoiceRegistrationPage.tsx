@@ -69,14 +69,16 @@ export function VoiceRegistrationPage() {
 
   return (
     <div className="setup-shell">
-      <div className="setup-container">
-        <div className="setup-wizard">
+      <div className="setup-container setup-container--with-stage">
+        <GlassCard className="setup-stage-shell">
           <SetupStageHeader
             current="voice"
             title="Регистрация голосов"
             subtitle="Сохраните короткий голосовой образец для каждого игрока."
           />
+        </GlassCard>
 
+        <div className="setup-wizard">
           <GlassCard className="voice-page__summary">
             <div className="voice-page__summary-row">
               <span>Зарегистрировано голосов</span>
