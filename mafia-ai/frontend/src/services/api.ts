@@ -8,6 +8,7 @@ const isLocalDevHost = LOCAL_HOSTS.has(CURRENT_HOST);
 const envApiBase = (import.meta.env.VITE_API_BASE || '').trim();
 const API_BASE = envApiBase || (isLocalDevHost ? '/api' : `http://${CURRENT_HOST}:8000`);
 const FETCH_TIMEOUT = 10000; // 10 seconds
+const ENROLL_FINISH_TIMEOUT = 60000; // CompreFace enrollment can take longer
 
 // Helper function with timeout
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeout = FETCH_TIMEOUT): Promise<Response> {
@@ -140,7 +141,7 @@ export async function enrollFinish(name?: string): Promise<EnrollFinishResponse>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
-  });
+  }, ENROLL_FINISH_TIMEOUT);
   return res.json();
 }
 

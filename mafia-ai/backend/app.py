@@ -130,6 +130,34 @@ def _encode_jpeg_bytes(img_bgr: np.ndarray) -> bytes:
     ok, buf = cv2.imencode(".jpg", img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
     return buf.tobytes() if ok else b""
 
+
+def _select_evenly_spaced_samples(samples: List[bytes], max_count: int) -> List[bytes]:
+    if max_count <= 0:
+        return []
+    n = len(samples)
+    if n <= max_count:
+        return list(samples)
+    if max_count == 1:
+        return [samples[n // 2]]
+
+    out: List[bytes] = []
+    used: Set[int] = set()
+    for i in range(max_count):
+        idx = int(round(i * (n - 1) / (max_count - 1)))
+        if idx in used:
+            continue
+        used.add(idx)
+        out.append(samples[idx])
+    if len(out) < max_count:
+        for idx, sample in enumerate(samples):
+            if idx in used:
+                continue
+            out.append(sample)
+            if len(out) >= max_count:
+                break
+    return out
+
+
 def _player_face_subject(pid: int) -> str:
     return _compreface.subject_for_player(pid)
 
@@ -877,8 +905,12 @@ async def enroll_finish(data: Dict[str, Any] = Body(None)):
             images = [bytes(x) for x in _enroll.get("images", []) if isinstance(x, (bytes, bytearray))]
             if len(images) < 4:
                 return {"ok": False, "error": f"need_more_face_samples ({len(images)}/4)"}
-            reg = await asyncio.to_thread(_compreface.register_subject_samples, face_subject, images)
+            max_compreface_samples = max(4, int(os.getenv("COMPREFACE_ENROLL_MAX_SAMPLES", "8")))
+            images_for_compreface = _select_evenly_spaced_samples(images, max_compreface_samples)
+            reg = await asyncio.to_thread(_compreface.register_subject_samples, face_subject, images_for_compreface)
             if not bool(reg.get("ok")):
+                reg["attempted"] = len(images_for_compreface)
+                reg["captured"] = len(images)
                 return {"ok": False, "error": "compreface_enroll_failed", "details": reg}
 
         thumb_img = _enroll["thumb"]
