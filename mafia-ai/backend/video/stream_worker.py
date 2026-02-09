@@ -648,10 +648,19 @@ class GestureStream:
                     out.append({"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0})
                 continue
 
-            xx1, yy1, xx2, yy2 = _expand_bbox((x1, y1, x2, y2), frame.shape)
+            xx1, yy1, xx2, yy2 = _expand_bbox((x1, y1, x2, y2), frame.shape, pad_ratio_x=0.28, pad_ratio_y=0.36)
             crop = frame[yy1:yy2, xx1:xx2]
             jpg = self._encode_crop_jpeg(crop)
             subject, simv = self._compreface.recognize_best(jpg)
+
+            # Fallback: еще более широкий кроп для случаев с частично обрезанным лицом.
+            if subject is None:
+                xx1b, yy1b, xx2b, yy2b = _expand_bbox((x1, y1, x2, y2), frame.shape, pad_ratio_x=0.40, pad_ratio_y=0.52)
+                crop2 = frame[yy1b:yy2b, xx1b:xx2b]
+                jpg2 = self._encode_crop_jpeg(crop2)
+                subject2, simv2 = self._compreface.recognize_best(jpg2)
+                if subject2 is not None or simv2 > simv:
+                    subject, simv = subject2, simv2
 
             pid: Optional[int] = None
             pname: Optional[str] = None

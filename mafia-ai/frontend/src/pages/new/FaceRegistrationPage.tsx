@@ -125,7 +125,7 @@ export function FaceRegistrationPage() {
       }
       setVideoRunning(true);
       await api.setVideoGestures(false);
-      await api.setVideoFaceMatch(false);
+      await api.setVideoFaceMatch(true);
     } catch (err: any) {
       console.error('Failed to start video:', err);
       setError(err?.message || 'Не удалось запустить видео');
@@ -268,9 +268,11 @@ export function FaceRegistrationPage() {
       setScanState('success');
       setScanProgress(100);
       await loadRegisteredPlayers();
+      await api.setVideoFaceMatch(true);
     } catch (err: any) {
       setScanState('error');
       setError(err?.message || 'Ошибка завершения регистрации');
+      await api.setVideoFaceMatch(true);
     }
   }
 
@@ -290,6 +292,7 @@ export function FaceRegistrationPage() {
       setScanProgress(0);
       setHint(DEFAULT_HINT);
       setError('');
+      await api.setVideoFaceMatch(false);
 
       const startRes = await api.enrollStart(name, 12);
       if (!startRes.ok) {
@@ -334,12 +337,14 @@ export function FaceRegistrationPage() {
       clearScanLoop();
       setScanState('error');
       setError(err?.message || 'Ошибка сканирования');
+      await api.setVideoFaceMatch(true);
     }
   }
 
   async function handleCancelScan() {
     clearScanLoop();
     await api.enrollCancel();
+    await api.setVideoFaceMatch(true);
     setScanState('idle');
     setScanProgress(0);
     setHint(DEFAULT_HINT);

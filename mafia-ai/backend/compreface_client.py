@@ -22,7 +22,7 @@ class CompreFaceClient:
         self.enabled = _env_bool("COMPREFACE_ENABLED", provider == "COMPREFACE")
         self.api_key = (os.getenv("COMPREFACE_API_KEY") or "").strip()
         self.timeout_sec = float(os.getenv("COMPREFACE_TIMEOUT_SEC", "4.0"))
-        self.similarity_threshold = float(os.getenv("COMPREFACE_SIMILARITY_THRESHOLD", "0.82"))
+        self.similarity_threshold = float(os.getenv("COMPREFACE_SIMILARITY_THRESHOLD", "0.72"))
         self.det_prob_threshold = float(os.getenv("COMPREFACE_DET_PROB_THRESHOLD", "0.7"))
         self.enroll_det_prob_threshold = float(os.getenv("COMPREFACE_ENROLL_DET_PROB_THRESHOLD", "0.25"))
         self.enroll_max_variants = max(1, int(os.getenv("COMPREFACE_ENROLL_MAX_VARIANTS", "6")))
