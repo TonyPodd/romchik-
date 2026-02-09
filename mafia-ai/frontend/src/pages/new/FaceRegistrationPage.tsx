@@ -95,6 +95,7 @@ export function FaceRegistrationPage() {
       clearScanLoop();
       void api.enrollCancel().catch(() => undefined);
       void api.setVideoGestures(true).catch(() => undefined);
+      void api.setVideoFaceMatch(true).catch(() => undefined);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -124,6 +125,7 @@ export function FaceRegistrationPage() {
       }
       setVideoRunning(true);
       await api.setVideoGestures(false);
+      await api.setVideoFaceMatch(false);
     } catch (err: any) {
       console.error('Failed to start video:', err);
       setError(err?.message || 'Не удалось запустить видео');
@@ -135,6 +137,7 @@ export function FaceRegistrationPage() {
       clearScanLoop();
       await api.enrollCancel();
       await api.setVideoGestures(true);
+      await api.setVideoFaceMatch(true);
       await api.stopVideo();
       setVideoRunning(false);
     } catch (err) {
@@ -219,7 +222,19 @@ export function FaceRegistrationPage() {
     try {
       const finishRes = await api.enrollFinish(name);
       if (!finishRes.ok) {
-        throw new Error(finishRes.error || 'Не удалось завершить регистрацию');
+        const details = finishRes.details;
+        const detailError =
+          (details && typeof details.error === 'string' && details.error) ||
+          (details && Array.isArray(details.sample_errors) && details.sample_errors[0]) ||
+          '';
+        const detailStats =
+          details && typeof details.added === 'number' && typeof details.total === 'number'
+            ? ` (${details.added}/${details.total})`
+            : '';
+        const message = detailError
+          ? `Не удалось зарегистрировать лицо в CompreFace: ${detailError}${detailStats}`
+          : finishRes.error || 'Не удалось завершить регистрацию';
+        throw new Error(message);
       }
 
       const enrolledProfile = finishRes.player as Partial<api.Player> | undefined;

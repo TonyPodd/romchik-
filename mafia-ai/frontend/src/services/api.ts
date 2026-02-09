@@ -69,6 +69,7 @@ export interface EnrollFinishResponse {
   ok: boolean;
   player?: any;
   error?: string;
+  details?: any;
 }
 
 // Video API
@@ -92,6 +93,15 @@ export async function getVideoStatus(): Promise<{ running: boolean; gestures_ena
 
 export async function setVideoGestures(enabled: boolean): Promise<{ ok: boolean; gestures_enabled?: boolean; error?: string }> {
   const res = await fetchWithTimeout(`${API_BASE}/video/gestures`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  return res.json();
+}
+
+export async function setVideoFaceMatch(enabled: boolean): Promise<{ ok: boolean; face_match_enabled?: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/video/face-match`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),

@@ -108,6 +108,22 @@ def _pick_largest_face(faces: List[Dict[str, Any]]) -> Dict[str, Any]:
     def area(bb): x1, y1, x2, y2 = bb; return max(0, x2 - x1) * max(0, y2 - y1)
     return max(faces, key=lambda f: area(f["bbox"]))
 
+
+def _expand_face_bbox(
+    bbox: Tuple[int, int, int, int],
+    frame_shape: Tuple[int, int, int],
+    pad_ratio_x: float = 0.14,
+    pad_ratio_y: float = 0.20,
+) -> Tuple[int, int, int, int]:
+    h, w = frame_shape[:2]
+    x1, y1, x2, y2 = bbox
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    px = int(bw * pad_ratio_x)
+    py = int(bh * pad_ratio_y)
+    return max(0, x1 - px), max(0, y1 - py), min(w, x2 + px), min(h, y2 + py)
+
+
 def _encode_jpeg_bytes(img_bgr: np.ndarray) -> bytes:
     if img_bgr is None or img_bgr.size == 0:
         return b""
@@ -341,6 +357,7 @@ def video_status():
     return {
         "running": _stream is not None,
         "gestures_enabled": bool(_stream.gestures_enabled) if _stream else True,
+        "face_match_enabled": bool(_stream.face_match_enabled) if _stream else True,
     }
 
 # --------------------------------------------------------------------------------------
@@ -374,6 +391,7 @@ async def video_start(
             "fps": f,
             "table_y_ratio": tyr,
             "gestures_enabled": _stream.gestures_enabled,
+            "face_match_enabled": _stream.face_match_enabled,
         }
     except Exception as e:
         _stream = None
@@ -402,6 +420,15 @@ async def video_set_gestures(body: _VideoGesturesIn):
         return {"ok": False, "error": "video not running"}
     _stream.set_gestures_enabled(body.enabled)
     return {"ok": True, "gestures_enabled": _stream.gestures_enabled}
+
+
+@app.post("/video/face-match")
+async def video_set_face_match(body: _VideoGesturesIn):
+    global _stream
+    if not _stream:
+        return {"ok": False, "error": "video not running"}
+    _stream.set_face_match_enabled(body.enabled)
+    return {"ok": True, "face_match_enabled": _stream.face_match_enabled}
 
 async def _mjpeg_generator():
     """MJPEG-стрим. При отсутствии новых кадров повторяет последний, до ~60 FPS."""
@@ -624,8 +651,8 @@ async def players_enroll(data: Dict[str, Any] = Body(None)):
         return {"ok": False, "error": "no face"}
 
     f = _pick_largest_face(faces)
-    x1, y1, x2, y2 = f["bbox"]
-    crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+    x1, y1, x2, y2 = _expand_face_bbox(f["bbox"], frame.shape)
+    crop = frame[y1:y2, x1:x2]
     emb = f["embedding"].astype(float).tolist()
 
     thumbs_dir = os.path.join("storage", "thumbs")
@@ -721,8 +748,8 @@ async def enroll_snap():
         return {"ok": True, "added": False, "reason": "no_face", "count": len(_enroll["samples"]), "target": _enroll["target"]}
 
     f = _pick_largest_face(faces)
-    x1, y1, x2, y2 = f["bbox"]
-    crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+    x1, y1, x2, y2 = _expand_face_bbox(f["bbox"], frame.shape)
+    crop = frame[y1:y2, x1:x2]
     if crop.size == 0:
         return {"ok": True, "added": False, "reason": "bad_crop", "count": len(_enroll["samples"]), "target": _enroll["target"]}
 

@@ -21,7 +21,7 @@ class CompreFaceClient:
         self.api_key = (os.getenv("COMPREFACE_API_KEY") or "").strip()
         self.timeout_sec = float(os.getenv("COMPREFACE_TIMEOUT_SEC", "4.0"))
         self.similarity_threshold = float(os.getenv("COMPREFACE_SIMILARITY_THRESHOLD", "0.82"))
-        self.det_prob_threshold = float(os.getenv("COMPREFACE_DET_PROB_THRESHOLD", "0.8"))
+        self.det_prob_threshold = float(os.getenv("COMPREFACE_DET_PROB_THRESHOLD", "0.7"))
         self.prediction_count = int(os.getenv("COMPREFACE_PREDICTION_COUNT", "3"))
         self.subject_prefix = (os.getenv("COMPREFACE_SUBJECT_PREFIX") or "player_").strip() or "player_"
 
@@ -62,16 +62,29 @@ class CompreFaceClient:
                 print("[compreface] disabled (set COMPREFACE_ENABLED=1 and COMPREFACE_API_KEY)")
                 self._logged_disabled = True
             raise RuntimeError("CompreFace is not configured")
-        resp = self._session.request(
-            method=method,
-            url=url,
-            params=params,
-            files=files,
-            headers=self._headers(),
-            timeout=self.timeout_sec,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        resp = None
+        try:
+            resp = self._session.request(
+                method=method,
+                url=url,
+                params=params,
+                files=files,
+                headers=self._headers(),
+                timeout=self.timeout_sec,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            status = getattr(resp, "status_code", None)
+            body = ""
+            if resp is not None:
+                try:
+                    body = (resp.text or "").strip()
+                except Exception:
+                    body = ""
+            if status is not None and body:
+                raise RuntimeError(f"HTTP {status}: {body[:300]}") from e
+            raise RuntimeError(str(e)) from e
         if not isinstance(data, dict):
             raise RuntimeError("CompreFace response is not JSON object")
         return data
@@ -122,9 +135,29 @@ class CompreFaceClient:
             return None, best_similarity
         return best_subject, best_similarity
 
-    def add_face_to_subject(self, subject: str, image_bytes: bytes) -> bool:
+    @staticmethod
+    def _extract_compreface_error(data: Dict[str, Any]) -> Optional[str]:
+        direct = data.get("message")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+
+        result = data.get("result")
+        if isinstance(result, list):
+            for row in result:
+                if not isinstance(row, dict):
+                    continue
+                msg = row.get("message") or row.get("error")
+                if isinstance(msg, str) and msg.strip():
+                    return msg.strip()
+        if isinstance(result, dict):
+            msg = result.get("message") or result.get("error")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+        return None
+
+    def add_face_to_subject(self, subject: str, image_bytes: bytes) -> Tuple[bool, Optional[str]]:
         if not subject or not image_bytes:
-            return False
+            return False, "empty_subject_or_image"
         try:
             data = self._request_json(
                 "POST",
@@ -135,9 +168,14 @@ class CompreFaceClient:
                 },
                 files={"file": ("face.jpg", image_bytes, "image/jpeg")},
             )
-        except Exception:
-            return False
-        return bool(data.get("result"))
+        except Exception as e:
+            return False, str(e)
+
+        result = data.get("result")
+        ok = bool(result)
+        if ok:
+            return True, None
+        return False, self._extract_compreface_error(data) or "no_face_detected"
 
     def register_subject_samples(self, subject: str, samples: List[bytes]) -> Dict[str, Any]:
         if not self.is_active():
@@ -151,10 +189,25 @@ class CompreFaceClient:
         # Re-enrolling must replace stale descriptors for the same slot/player.
         self.delete_subject(subject)
         added = 0
+        errors: List[str] = []
         for sample in cleaned:
-            if self.add_face_to_subject(subject, bytes(sample)):
+            ok, error = self.add_face_to_subject(subject, bytes(sample))
+            if ok:
                 added += 1
-        return {"ok": added > 0, "added": added, "total": len(cleaned)}
+            elif error and len(errors) < 3:
+                errors.append(error)
+
+        response: Dict[str, Any] = {
+            "ok": added > 0,
+            "added": added,
+            "failed": max(0, len(cleaned) - added),
+            "total": len(cleaned),
+        }
+        if errors:
+            response["sample_errors"] = errors
+        if added == 0 and errors:
+            response["error"] = errors[0]
+        return response
 
     def list_subjects(self) -> List[str]:
         try:

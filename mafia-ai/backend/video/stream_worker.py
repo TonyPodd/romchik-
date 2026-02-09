@@ -73,6 +73,25 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _expand_bbox(
+    bbox: Tuple[int, int, int, int],
+    frame_shape: Tuple[int, int, int],
+    pad_ratio_x: float = 0.14,
+    pad_ratio_y: float = 0.20,
+) -> Tuple[int, int, int, int]:
+    h, w = frame_shape[:2]
+    x1, y1, x2, y2 = bbox
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    padx = int(bw * pad_ratio_x)
+    pady = int(bh * pad_ratio_y)
+    xx1 = max(0, x1 - padx)
+    yy1 = max(0, y1 - pady)
+    xx2 = min(w, x2 + padx)
+    yy2 = min(h, y2 + pady)
+    return xx1, yy1, xx2, yy2
+
+
 def _face_appearance_descriptor(face_bgr: np.ndarray) -> np.ndarray:
     """
     Легкий внешний вид-дескриптор (fallback, когда нет ArcFace).
@@ -276,6 +295,13 @@ class GestureStream:
         self._det = GestureDetector(table_y_ratio=table_y_ratio)
         self._face: _FaceBackendBase = _make_face_backend_initial()
         self._face_failed = False
+        self._compreface = get_compreface_client()
+
+        default_every = "2" if self._compreface.is_active() else "1"
+        self._face_analyze_every = max(1, _safe_int(os.getenv("FACE_ANALYZE_EVERY_N", default_every), default=1))
+        self._compreface_match_interval_sec = float(os.getenv("COMPREFACE_MATCH_INTERVAL_SEC", "0.45"))
+        self._compreface_cache_ttl_sec = float(os.getenv("COMPREFACE_CACHE_TTL_SEC", "1.25"))
+        self._compreface_min_face_size = max(24, _safe_int(os.getenv("COMPREFACE_MIN_FACE_SIZE", "72"), default=72))
 
         self._cap: Optional[cv2.VideoCapture] = None
         self._task: Optional[asyncio.Task] = None
@@ -285,6 +311,7 @@ class GestureStream:
         self.detect_enabled: bool = True
         self.render_mode: int = RENDER_FULL
         self.gestures_enabled: bool = True
+        self.face_match_enabled: bool = True
 
         # Буферы
         self._last_raw_jpeg: Optional[bytes] = None
@@ -297,7 +324,9 @@ class GestureStream:
         self._frame_counter: int = 0  # Для анимации
         self._thumb_desc_cache: Dict[int, np.ndarray] = {}
         self._thumb_desc_stamp: Dict[int, float] = {}
-        self._compreface = get_compreface_client()
+        self._last_faces: List[Dict[str, Any]] = []
+        self._last_matches: List[Dict[str, Any]] = []
+        self._compreface_face_cache: List[Dict[str, Any]] = []
 
     # --- Control API ---
 
@@ -309,6 +338,11 @@ class GestureStream:
 
     def set_gestures_enabled(self, flag: bool):
         self.gestures_enabled = bool(flag)
+
+    def set_face_match_enabled(self, flag: bool):
+        self.face_match_enabled = bool(flag)
+        self._compreface_face_cache.clear()
+        self._last_matches = []
 
     def begin_table_calibration(self):
         """Вызывайте при входе в шаг калибровки стола."""
@@ -561,9 +595,61 @@ class GestureStream:
             if subject:
                 by_subject[subject] = p
 
+        now = time.time()
+        self._compreface_face_cache = [
+            row for row in self._compreface_face_cache
+            if now - float(row.get("last_seen", 0.0)) <= self._compreface_cache_ttl_sec
+        ]
+
         for f in faces:
             x1, y1, x2, y2 = f["bbox"]
-            crop = frame[max(0, y1):min(frame.shape[0], y2), max(0, x1):min(frame.shape[1], x2)]
+            bw = max(1, x2 - x1)
+            bh = max(1, y2 - y1)
+            diag = float((bw * bw + bh * bh) ** 0.5)
+            cx = int((x1 + x2) * 0.5)
+            cy = int((y1 + y2) * 0.5)
+
+            cache_row: Optional[Dict[str, Any]] = None
+            best_dist2: Optional[float] = None
+            max_dist = max(42.0, diag * 0.55)
+            max_dist2 = max_dist * max_dist
+            for row in self._compreface_face_cache:
+                dx = float(cx - _safe_int(row.get("cx"), 0))
+                dy = float(cy - _safe_int(row.get("cy"), 0))
+                dist2 = dx * dx + dy * dy
+                if dist2 > max_dist2:
+                    continue
+                if best_dist2 is None or dist2 < best_dist2:
+                    best_dist2 = dist2
+                    cache_row = row
+
+            if cache_row is not None:
+                cache_row["cx"] = cx
+                cache_row["cy"] = cy
+                cache_row["last_seen"] = now
+                if now - float(cache_row.get("recognized_at", 0.0)) < self._compreface_match_interval_sec:
+                    out.append({
+                        "bbox": f["bbox"],
+                        "id": cache_row.get("pid"),
+                        "name": cache_row.get("name"),
+                        "sim": float(cache_row.get("sim", 0.0)),
+                    })
+                    continue
+
+            if min(bw, bh) < self._compreface_min_face_size:
+                if cache_row is not None:
+                    out.append({
+                        "bbox": f["bbox"],
+                        "id": cache_row.get("pid"),
+                        "name": cache_row.get("name"),
+                        "sim": float(cache_row.get("sim", 0.0)),
+                    })
+                else:
+                    out.append({"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0})
+                continue
+
+            xx1, yy1, xx2, yy2 = _expand_bbox((x1, y1, x2, y2), frame.shape)
+            crop = frame[yy1:yy2, xx1:xx2]
             jpg = self._encode_crop_jpeg(crop)
             subject, simv = self._compreface.recognize_best(jpg)
 
@@ -573,6 +659,21 @@ class GestureStream:
                 p = by_subject[subject]
                 pid = int(p.get("id")) if p.get("id") is not None else None
                 pname = p.get("name") or (f"Player {pid}" if pid is not None else None)
+
+            if cache_row is None:
+                cache_row = {}
+                self._compreface_face_cache.append(cache_row)
+            cache_row.update(
+                {
+                    "cx": cx,
+                    "cy": cy,
+                    "pid": pid,
+                    "name": pname,
+                    "sim": float(simv),
+                    "last_seen": now,
+                    "recognized_at": now,
+                }
+            )
             out.append({"bbox": f["bbox"], "id": pid, "name": pname, "sim": float(simv)})
         return out
 
@@ -824,8 +925,24 @@ class GestureStream:
                     if self.gestures_enabled:
                         res = await asyncio.to_thread(self._det.process_frame, frame)
                         digit = _safe_int(getattr(res, "digit", None), default=-1)
-                    faces = await asyncio.to_thread(self._safe_face_analyze, frame)
-                    matches = await asyncio.to_thread(self._match_faces, frame, faces)
+
+                    need_face_refresh = (
+                        not self._last_faces
+                        or not self._last_matches
+                        or self._face_analyze_every <= 1
+                        or (self._frame_counter % self._face_analyze_every == 0)
+                    )
+                    if need_face_refresh:
+                        faces = await asyncio.to_thread(self._safe_face_analyze, frame)
+                        if self.face_match_enabled:
+                            matches = await asyncio.to_thread(self._match_faces, frame, faces)
+                        else:
+                            matches = [{"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0} for f in faces]
+                        self._last_faces = faces
+                        self._last_matches = matches
+                    else:
+                        faces = self._last_faces
+                        matches = self._last_matches
 
                     if self.gestures_enabled and res is not None:
                         h, w = frame.shape[:2]
