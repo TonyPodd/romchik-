@@ -10,10 +10,14 @@ services:
     environment:
       - FACE_PROVIDER=COMPREFACE
       - COMPREFACE_ENABLED=1
-      - COMPREFACE_URL=http://compreface-api:8000
+      - COMPREFACE_URL=http://compreface-api:8080
       - COMPREFACE_API_KEY=${COMPREFACE_API_KEY:-}
     command: >
       bash -lc "
+      apt-get update
+      && apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+      && rm -rf /var/lib/apt/lists/*
+      &&
       awk '!/^insightface==/ && !/^pyaudio==/ && !/^pytest==/ && !/^pytest-asyncio==/ && !/^black==/ && !/^ruff==/' requirements.txt > /tmp/requirements.runtime.txt
       && pip install -r /tmp/requirements.runtime.txt
       && uvicorn app:app --host 0.0.0.0 --port 8000
@@ -68,7 +72,7 @@ services:
       - MAX_FILE_SIZE=5MB
       - MAX_REQUEST_SIZE=10MB
     ports:
-      - "8002:8000"
+      - "8002:8080"
 
   compreface-ui:
     image: exadel/compreface-fe:1.2.0
