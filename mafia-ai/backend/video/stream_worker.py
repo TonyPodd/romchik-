@@ -970,13 +970,22 @@ class GestureStream:
                         face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
 
                         def _label_for_hand(h) -> Tuple[str, int]:
-                            ext = getattr(h, "extended", None)
-                            if isinstance(ext, dict):
-                                cnt = int(sum(1 for v in ext.values() if bool(v)))
-                            elif isinstance(ext, (list, tuple)):
-                                cnt = int(sum(1 for v in ext if bool(v)))
+                            cnt_raw = getattr(h, "count", None)
+                            if isinstance(cnt_raw, (int, float)):
+                                cnt = _safe_int(cnt_raw, default=0)
                             else:
-                                cnt = _safe_int(getattr(h, "count", None), default=0)
+                                ext = getattr(h, "extended", None)
+                                if isinstance(ext, dict):
+                                    cnt = int(sum(1 for v in ext.values() if bool(v)))
+                                elif isinstance(ext, (list, tuple)):
+                                    cnt = int(sum(1 for v in ext if bool(v)))
+                                else:
+                                    cnt = 0
+
+                            if cnt < 0:
+                                cnt = 0
+                            if cnt > 10:
+                                cnt = 10
 
                             gesture = str(getattr(h, "gesture", "") or "").strip().lower()
                             if gesture:

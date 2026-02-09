@@ -186,33 +186,73 @@ class GestureDetector:
         for tid in dead:
             self._tracks.pop(tid, None)
 
+    def _non_thumb_folded_count(self, lm_px: List[Tuple[int, int]]) -> int:
+        wrist = lm_px[0]
+        palm = max(12.0, self._dist(wrist, lm_px[9]))
+        folded = 0
+        # index, middle, ring, pinky
+        for mcp_i, pip_i, tip_i in ((5, 6, 8), (9, 10, 12), (13, 14, 16), (17, 18, 20)):
+            mcp = lm_px[mcp_i]
+            pip = lm_px[pip_i]
+            tip = lm_px[tip_i]
+            ang = self._angle(mcp, pip, tip)
+            d_tip_wrist = self._dist(tip, wrist)
+            d_mcp_wrist = self._dist(mcp, wrist)
+            folded_angle = ang < 158.0
+            folded_dist = d_tip_wrist < (d_mcp_wrist + 0.22 * palm)
+            if folded_angle and folded_dist:
+                folded += 1
+        return folded
+
     def _is_thumb_up(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
-        if not ext["thumb"]:
-            return False
-        if ext["index"] or ext["middle"] or ext["ring"] or ext["pinky"]:
-            return False
         palm = max(12.0, self._dist(lm_px[0], lm_px[9]))
+        thumb_mcp = lm_px[2]
+        thumb_ip = lm_px[3]
         tip = lm_px[4]
         wrist = lm_px[0]
-        vertical = abs(float(tip[1] - wrist[1]))
-        horizontal = abs(float(tip[0] - wrist[0]))
-        if vertical < (horizontal * 0.7):
+        vx = float(tip[0] - thumb_ip[0])
+        vy = float(tip[1] - thumb_ip[1])
+        thumb_len = self._dist(thumb_ip, tip)
+        thumb_ang = self._angle(thumb_mcp, thumb_ip, tip)
+        vertical_axis = abs(vy) > (abs(vx) * 1.15)
+        folded_non_thumb = self._non_thumb_folded_count(lm_px)
+
+        if not vertical_axis:
             return False
-        return bool(tip[1] < (wrist[1] - 0.28 * palm))
+        if thumb_len < (0.20 * palm):
+            return False
+        if thumb_ang < 135.0:
+            return False
+        if tip[1] >= (wrist[1] - 0.20 * palm):
+            return False
+        # Allow small landmark noise: at least 3 of 4 non-thumb fingers folded.
+        return folded_non_thumb >= 3
 
     def _is_thumb_down(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
-        if not ext["thumb"]:
-            return False
-        if ext["index"] or ext["middle"] or ext["ring"] or ext["pinky"]:
-            return False
         palm = max(12.0, self._dist(lm_px[0], lm_px[9]))
+        thumb_mcp = lm_px[2]
+        thumb_ip = lm_px[3]
         tip = lm_px[4]
         wrist = lm_px[0]
-        vertical = abs(float(tip[1] - wrist[1]))
-        horizontal = abs(float(tip[0] - wrist[0]))
-        if vertical < (horizontal * 0.7):
+        vx = float(tip[0] - thumb_ip[0])
+        vy = float(tip[1] - thumb_ip[1])
+        thumb_len = self._dist(thumb_ip, tip)
+        thumb_ang = self._angle(thumb_mcp, thumb_ip, tip)
+        vertical_axis = abs(vy) > (abs(vx) * 1.15)
+        folded_non_thumb = self._non_thumb_folded_count(lm_px)
+
+        if not vertical_axis:
             return False
-        return bool(tip[1] > (wrist[1] + 0.28 * palm))
+        if thumb_len < (0.20 * palm):
+            return False
+        if thumb_ang < 135.0:
+            return False
+        if tip[1] <= (wrist[1] + 0.20 * palm):
+            return False
+        if vy <= 0:
+            return False
+        # More tolerant than strict "all folded", but still avoids confusion with numeric gestures.
+        return folded_non_thumb >= 3
 
     def _is_ok_sign(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
         palm = max(12.0, self._dist(lm_px[0], lm_px[9]))
@@ -224,6 +264,32 @@ class GestureDetector:
     @staticmethod
     def _is_jambo(ext: Dict[str, bool]) -> bool:
         return bool(ext["thumb"] and ext["pinky"] and not (ext["index"] or ext["middle"] or ext["ring"]))
+
+    def _numeric_count(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> int:
+        # For numeric gestures we primarily count non-thumb fingers to avoid +1 bias.
+        # Thumb contributes only for a clear open palm ("5").
+        base = int(bool(ext["index"])) + int(bool(ext["middle"])) + int(bool(ext["ring"])) + int(bool(ext["pinky"]))
+        if base < 4 or not bool(ext["thumb"]):
+            return base
+
+        palm = max(12.0, self._dist(lm_px[0], lm_px[9]))
+        thumb_tip = lm_px[4]
+        thumb_ip = lm_px[3]
+        index_mcp = lm_px[5]
+        wrist = lm_px[0]
+
+        thumb_span = self._dist(thumb_tip, index_mcp)
+        thumb_len = self._dist(thumb_ip, thumb_tip)
+        d_tip_wrist = self._dist(thumb_tip, wrist)
+        d_ip_wrist = self._dist(thumb_ip, wrist)
+
+        if (
+            thumb_len >= (0.18 * palm)
+            and thumb_span >= (0.34 * palm)
+            and d_tip_wrist > (d_ip_wrist + 0.08 * palm)
+        ):
+            return 5
+        return 4
 
     @staticmethod
     def _is_two_up_pose(ext: Dict[str, bool]) -> bool:
@@ -291,7 +357,7 @@ class GestureDetector:
                     "ring": self._finger_extended(lm_px, "ring"),
                     "pinky": self._finger_extended(lm_px, "pinky"),
                 }
-                count = int(sum(1 for v in ext.values() if bool(v)))
+                count = self._numeric_count(ext, lm_px)
 
                 track = self._assign_track((cx, cy), label, bbox, now, used_track_ids)
                 used_track_ids.add(track.track_id)
