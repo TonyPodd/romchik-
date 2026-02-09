@@ -16,6 +16,7 @@ from starlette.responses import StreamingResponse
 
 from video.stream_worker import GestureStream
 from storage import players as P
+from compreface_client import get_compreface_client
 
 # Новая архитектура
 from api.routers import game as game_router
@@ -61,6 +62,7 @@ app.include_router(game_router.router)
 
 clients: Set[WebSocket] = set()
 _stream: Optional[GestureStream] = None
+_compreface = get_compreface_client()
 
 # сессия энролла (простая dict-структура)
 _enroll: Optional[dict] = None
@@ -97,6 +99,15 @@ def _face_quality_score(img_bgr: np.ndarray) -> float:
 def _pick_largest_face(faces: List[Dict[str, Any]]) -> Dict[str, Any]:
     def area(bb): x1, y1, x2, y2 = bb; return max(0, x2 - x1) * max(0, y2 - y1)
     return max(faces, key=lambda f: area(f["bbox"]))
+
+def _encode_jpeg_bytes(img_bgr: np.ndarray) -> bytes:
+    if img_bgr is None or img_bgr.size == 0:
+        return b""
+    ok, buf = cv2.imencode(".jpg", img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+    return buf.tobytes() if ok else b""
+
+def _player_face_subject(pid: int) -> str:
+    return _compreface.subject_for_player(pid)
 
 def _embed_diverse(en: np.ndarray, samples: List[np.ndarray], max_sim: float = 0.90) -> bool:
     if not samples:
@@ -167,7 +178,12 @@ def _players_next_id_fallback() -> int:
     except Exception:
         return int(time.time())
 
-def _players_add_safe(embedding: List[float], thumb_rel: str, name: str) -> Dict[str, Any]:
+def _players_add_safe(
+    embedding: List[float],
+    thumb_rel: str,
+    name: str,
+    face_subject: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Универсальная обёртка над P.add_player с поддержкой разных сигнатур:
     - add_player(embedding=..., thumb=..., name=...)
@@ -177,7 +193,10 @@ def _players_add_safe(embedding: List[float], thumb_rel: str, name: str) -> Dict
     if not hasattr(P, "add_player"):
         raise RuntimeError("storage.players.add_player is missing")
     try:
-        return P.add_player(embedding=embedding, thumb=thumb_rel, name=name)  # type: ignore[call-arg]
+        kw: Dict[str, Any] = {"embedding": embedding, "thumb_rel": thumb_rel, "name": name}
+        if face_subject:
+            kw["face_subject"] = face_subject
+        return P.add_player(**kw)  # type: ignore[call-arg]
     except TypeError:
         try:
             return P.add_player(embedding, thumb_rel, name)  # type: ignore[misc]
@@ -191,6 +210,16 @@ def _players_add_safe(embedding: List[float], thumb_rel: str, name: str) -> Dict
 @app.get("/health")
 def health():
     return {"ok": True, "clients": len(clients), "video_running": _stream is not None}
+
+@app.get("/face/provider/status")
+def face_provider_status():
+    health = _compreface.health()
+    return {
+        "provider": "compreface" if _compreface.enabled else "local",
+        "enabled": _compreface.enabled,
+        "configured": _compreface.is_active(),
+        "health": health,
+    }
 
 @app.get("/video/status")
 def video_status():
@@ -425,6 +454,15 @@ async def table_end():
 
 @app.post("/players/reset")
 def players_reset():
+    compreface_deleted = 0
+    if _compreface.is_active():
+        for p in P.list_players():
+            pid = int(p.get("id", 0))
+            subject = p.get("face_subject") if isinstance(p.get("face_subject"), str) else _player_face_subject(pid)
+            if isinstance(subject, str) and subject and _compreface.delete_subject(subject):
+                compreface_deleted += 1
+        compreface_deleted += _compreface.delete_all_player_subjects()
+
     P.reset_players()
     thumbs_dir = os.path.join("storage", "thumbs")
     try:
@@ -434,7 +472,7 @@ def players_reset():
                 except: pass
     except FileNotFoundError:
         pass
-    return {"ok": True}
+    return {"ok": True, "compreface_deleted": compreface_deleted}
 
 class _PlayerNameIn(BaseModel):
     id: int
@@ -481,7 +519,15 @@ async def players_enroll(data: Dict[str, Any] = Body(None)):
     thumb_rel = f"thumbs/{pid}.jpg"
     cv2.imwrite(os.path.join(thumbs_dir, f"{pid}.jpg"), crop)
 
-    player = _players_add_safe(embedding=emb, thumb_rel=thumb_rel, name=name)
+    face_subject: Optional[str] = None
+    if _compreface.is_active():
+        face_subject = _player_face_subject(pid)
+        sample = _encode_jpeg_bytes(crop)
+        reg = await asyncio.to_thread(_compreface.register_subject_samples, face_subject, [sample])
+        if not bool(reg.get("ok")):
+            return {"ok": False, "error": "compreface_enroll_failed", "details": reg}
+
+    player = _players_add_safe(embedding=emb, thumb_rel=thumb_rel, name=name, face_subject=face_subject)
     return {"ok": True, "player": player}
 
 # --------------------------------------------------------------------------------------
@@ -502,6 +548,7 @@ async def enroll_start(data: Dict[str, Any] = Body(None)):
         "name": name,
         "target": target,
         "samples": [],       # List[np.ndarray]
+        "images": [],        # List[bytes] - JPEG crops for CompreFace
         "thumb": None,       # np.ndarray (BGR)
         "last_add": 0.0,     # время последнего успешного ДОБАВЛЕНИЯ
         "last_snap": 0.0,    # время последнего СНИМКA (для антиспама)
@@ -572,6 +619,7 @@ async def enroll_snap():
     # пороги
     QUALITY_THR = 0.45        # Higher quality samples for better recognition
     DIVERSE_MAX_SIM = 0.88    # More diverse samples for robustness
+    sample_jpeg = _encode_jpeg_bytes(crop)
 
     # проверка качества
     if q < QUALITY_THR and since_add < 1.6:
@@ -582,6 +630,8 @@ async def enroll_snap():
         # если давно не добавляли — форсируем добавление похожего
         if since_add >= 1.2 or count == 0:
             _enroll["samples"].append(emb)
+            if sample_jpeg:
+                _enroll["images"].append(sample_jpeg)
             if _enroll["thumb"] is None:
                 _enroll["thumb"] = crop.copy()
             _enroll["last_add"] = now
@@ -592,6 +642,8 @@ async def enroll_snap():
 
     # нормальная успешная добавка
     _enroll["samples"].append(emb)
+    if sample_jpeg:
+        _enroll["images"].append(sample_jpeg)
     if _enroll["thumb"] is None:
         _enroll["thumb"] = crop.copy()
     _enroll["last_add"] = now
@@ -677,12 +729,27 @@ async def enroll_finish(data: Dict[str, Any] = Body(None)):
         os.makedirs(thumbs_dir, exist_ok=True)
         pid = _players_next_id_fallback()
         thumb_rel = f"thumbs/{pid}.jpg"
+        face_subject: Optional[str] = None
+        if _compreface.is_active():
+            face_subject = _player_face_subject(pid)
+            images = [bytes(x) for x in _enroll.get("images", []) if isinstance(x, (bytes, bytearray))]
+            if len(images) < 4:
+                return {"ok": False, "error": f"need_more_face_samples ({len(images)}/4)"}
+            reg = await asyncio.to_thread(_compreface.register_subject_samples, face_subject, images)
+            if not bool(reg.get("ok")):
+                return {"ok": False, "error": "compreface_enroll_failed", "details": reg}
+
         thumb_img = _enroll["thumb"]
         if thumb_img is None:
             thumb_img = np.zeros((120, 120, 3), dtype=np.uint8)
         cv2.imwrite(os.path.join(thumbs_dir, f"{pid}.jpg"), thumb_img)
 
-        player = _players_add_safe(embedding=emb_list, thumb_rel=thumb_rel, name=name)
+        player = _players_add_safe(
+            embedding=emb_list,
+            thumb_rel=thumb_rel,
+            name=name,
+            face_subject=face_subject,
+        )
         _enroll = None
         return {"ok": True, "player": player}
 
@@ -718,6 +785,7 @@ class _PlayerDeleteIn(BaseModel):
 
 @app.post("/players/delete")
 def players_delete(body: _PlayerDeleteIn):
+    face_subject: Optional[str] = None
     # сначала попробуем удалить файл
     try:
         for p in P.list_players():
@@ -727,9 +795,18 @@ def players_delete(body: _PlayerDeleteIn):
                     path = os.path.join("storage", thumb)
                     try: os.remove(path)
                     except FileNotFoundError: pass
+                subj = p.get("face_subject")
+                if isinstance(subj, str) and subj.strip():
+                    face_subject = subj.strip()
+                else:
+                    face_subject = _player_face_subject(body.id)
                 break
     except Exception:
         pass
+
+    if _compreface.is_active() and face_subject:
+        _compreface.delete_subject(face_subject)
+
     ok = P.delete_player(body.id)
     return {"ok": ok}
 

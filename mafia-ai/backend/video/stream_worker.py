@@ -14,6 +14,7 @@ import numpy as np
 
 from video.gestures import GestureDetector
 from storage import players as P
+from compreface_client import get_compreface_client
 
 EventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
@@ -287,6 +288,7 @@ class GestureStream:
         self._frame_counter: int = 0  # Для анимации
         self._thumb_desc_cache: Dict[int, np.ndarray] = {}
         self._thumb_desc_stamp: Dict[int, float] = {}
+        self._compreface = get_compreface_client()
 
     # --- Control API ---
 
@@ -520,7 +522,52 @@ class GestureStream:
         self._thumb_desc_stamp[pid] = stamp
         return desc
 
-    def _match_faces(self, frame: np.ndarray, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _encode_crop_jpeg(crop: np.ndarray) -> bytes:
+        if crop is None or crop.size == 0:
+            return b""
+        ok, buf = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        return buf.tobytes() if ok else b""
+
+    def _subject_from_player(self, player: Dict[str, Any]) -> Optional[str]:
+        pid = int(player.get("id", -1))
+        if pid <= 0:
+            return None
+        subject = player.get("face_subject")
+        if isinstance(subject, str) and subject.strip():
+            return subject.strip()
+        return self._compreface.subject_for_player(pid)
+
+    def _match_faces_compreface(self, frame: np.ndarray, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        reg = P.list_players()
+        out: List[Dict[str, Any]] = []
+        if not faces:
+            return out
+        if not reg:
+            return [{"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0} for f in faces]
+
+        by_subject: Dict[str, Dict[str, Any]] = {}
+        for p in reg:
+            subject = self._subject_from_player(p)
+            if subject:
+                by_subject[subject] = p
+
+        for f in faces:
+            x1, y1, x2, y2 = f["bbox"]
+            crop = frame[max(0, y1):min(frame.shape[0], y2), max(0, x1):min(frame.shape[1], x2)]
+            jpg = self._encode_crop_jpeg(crop)
+            subject, simv = self._compreface.recognize_best(jpg)
+
+            pid: Optional[int] = None
+            pname: Optional[str] = None
+            if subject and subject in by_subject:
+                p = by_subject[subject]
+                pid = int(p.get("id")) if p.get("id") is not None else None
+                pname = p.get("name") or (f"Player {pid}" if pid is not None else None)
+            out.append({"bbox": f["bbox"], "id": pid, "name": pname, "sim": float(simv)})
+        return out
+
+    def _match_faces_legacy(self, frame: np.ndarray, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         reg = P.list_players()
         out: List[Dict[str, Any]] = []
         if not faces:
@@ -605,6 +652,14 @@ class GestureStream:
                     pname = id_to_name.get(pid)  # Get name from map
             out.append({"bbox": f["bbox"], "id": pid, "name": pname, "sim": simv})
         return out
+
+    def _match_faces(self, frame: np.ndarray, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if self._compreface.is_active():
+            try:
+                return self._match_faces_compreface(frame, faces)
+            except Exception as e:
+                print(f"[face] CompreFace match failed, fallback to legacy matcher: {e}")
+        return self._match_faces_legacy(frame, faces)
 
     # --- Overlay ---
 
@@ -761,7 +816,7 @@ class GestureStream:
                         res = await asyncio.to_thread(self._det.process_frame, frame)
                         digit = int(res.digit)
                     faces = await asyncio.to_thread(self._safe_face_analyze, frame)
-                    matches = self._match_faces(frame, faces)
+                    matches = await asyncio.to_thread(self._match_faces, frame, faces)
 
                     if self.gestures_enabled and res is not None:
                         h, w = frame.shape[:2]

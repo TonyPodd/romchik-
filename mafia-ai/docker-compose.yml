@@ -1,9 +1,88 @@
+volumes:
+  compreface-postgres-data:
+
 services:
   backend:
     image: python:3.11-slim
     working_dir: /app
     volumes:
       - ./backend:/app
+    environment:
+      - FACE_PROVIDER=COMPREFACE
+      - COMPREFACE_ENABLED=1
+      - COMPREFACE_URL=http://compreface-api:8000
+      - COMPREFACE_API_KEY=${COMPREFACE_API_KEY:-}
     command: bash -lc "pip install -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+    depends_on:
+      - compreface-api
+
+  compreface-postgres-db:
+    image: exadel/compreface-postgres-db:1.2.0
+    container_name: compreface-postgres-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=frs
+    volumes:
+      - compreface-postgres-data:/var/lib/postgresql/data
+
+  compreface-admin:
+    image: exadel/compreface-admin:1.2.0
+    container_name: compreface-admin
+    restart: unless-stopped
+    depends_on:
+      - compreface-postgres-db
+      - compreface-api
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_URL=jdbc:postgresql://compreface-postgres-db:5432/frs
+      - SPRING_PROFILES_ACTIVE=dev
+      - ENABLE_EMAIL_SERVER=false
+      - ADMIN_JAVA_OPTS=-Xmx1g
+      - MAX_FILE_SIZE=5MB
+      - MAX_REQUEST_SIZE=10MB
+
+  compreface-api:
+    image: exadel/compreface-api:1.2.0
+    container_name: compreface-api
+    restart: unless-stopped
+    depends_on:
+      - compreface-postgres-db
+      - compreface-core
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_URL=jdbc:postgresql://compreface-postgres-db:5432/frs
+      - SPRING_PROFILES_ACTIVE=dev
+      - API_JAVA_OPTS=-Xmx2g
+      - SAVE_IMAGES_TO_DB=true
+      - MAX_FILE_SIZE=5MB
+      - MAX_REQUEST_SIZE=10MB
+    ports:
+      - "8002:8000"
+
+  compreface-ui:
+    image: exadel/compreface-fe:1.2.0
+    container_name: compreface-ui
+    restart: unless-stopped
+    depends_on:
+      - compreface-api
+      - compreface-admin
+    ports:
+      - "8001:80"
+    environment:
+      - CLIENT_MAX_BODY_SIZE=10M
+      - PROXY_READ_TIMEOUT=60000ms
+      - PROXY_CONNECT_TIMEOUT=10000ms
+
+  compreface-core:
+    image: exadel/compreface-core:1.2.0
+    container_name: compreface-core
+    restart: unless-stopped
+    environment:
+      - ML_PORT=3000
+      - IMG_LENGTH_LIMIT=640

@@ -29,9 +29,11 @@ def next_id() -> int:
     players = list_players()
     return (max([p["id"] for p in players]) + 1) if players else 1
 
-def add_player(embedding: list[float], thumb_rel: str, name: str = "") -> Dict[str, Any]:
+def add_player(embedding: list[float], thumb_rel: str, name: str = "", **extra: Any) -> Dict[str, Any]:
     pid = next_id()
     player = {"id": pid, "name": name, "embedding": embedding, "thumb": thumb_rel}
+    if extra:
+        player.update(extra)
     data = _load()
     data["players"].append(player)
     _save(data)
