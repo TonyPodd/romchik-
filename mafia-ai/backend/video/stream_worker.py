@@ -61,6 +61,28 @@ def _point_in_poly(px: Tuple[int, int], poly: np.ndarray) -> bool:
     return cv2.pointPolygonTest(poly.astype(np.int32), (int(px[0]), int(px[1])), False) >= 0
 
 
+def _face_appearance_descriptor(face_bgr: np.ndarray) -> np.ndarray:
+    """
+    Легкий внешний вид-дескриптор (fallback, когда нет ArcFace).
+    Нужен для различения нескольких игроков в LANDMARKS-режиме.
+    """
+    if face_bgr is None or face_bgr.size == 0:
+        return np.zeros(432, dtype=np.float32)
+
+    gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.resize(gray, (20, 20), interpolation=cv2.INTER_LINEAR)
+    gray = cv2.equalizeHist(gray)
+
+    pix = gray.astype(np.float32).reshape(-1) / 255.0  # 400
+    hist = cv2.calcHist([gray], [0], None, [32], [0, 256]).reshape(-1).astype(np.float32)  # 32
+    hist = hist / (float(hist.sum()) + 1e-6)
+
+    desc = np.concatenate([pix, hist], axis=0).astype(np.float32)
+    desc = desc - float(desc.mean())
+    desc = desc / (np.linalg.norm(desc) + 1e-6)
+    return desc
+
+
 # ---------------- Face identification backends ----------------
 
 class _FaceBackendBase:
@@ -160,7 +182,9 @@ class _FaceBackendLandmarks(_FaceBackendBase):
             emb = np.array(vec, dtype=np.float32)
             emb = emb - emb.mean()
             emb = emb / (np.linalg.norm(emb) + 1e-6)
-            out.append({"bbox": (x1, y1, x2, y2), "score": 1.0, "embedding": emb})
+            crop = frame_bgr[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+            appearance = _face_appearance_descriptor(crop)
+            out.append({"bbox": (x1, y1, x2, y2), "score": 1.0, "embedding": emb, "appearance": appearance})
         return out
 
 
@@ -219,6 +243,8 @@ class GestureStream:
 
         self._table_poly_norm: Optional[List[Tuple[float, float]]] = None
         self._frame_counter: int = 0  # Для анимации
+        self._thumb_desc_cache: Dict[int, np.ndarray] = {}
+        self._thumb_desc_stamp: Dict[int, float] = {}
 
     # --- Control API ---
 
@@ -428,7 +454,31 @@ class GestureStream:
 
     # --- Matching ---
 
-    def _match_faces(self, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _player_thumb_descriptor(self, player: Dict[str, Any]) -> Optional[np.ndarray]:
+        pid = int(player.get("id", -1))
+        thumb_rel = player.get("thumb")
+        if not isinstance(thumb_rel, str) or pid <= 0:
+            return None
+
+        path = os.path.join("storage", thumb_rel)
+        try:
+            stamp = float(os.path.getmtime(path))
+        except OSError:
+            return None
+
+        if pid in self._thumb_desc_cache and self._thumb_desc_stamp.get(pid) == stamp:
+            return self._thumb_desc_cache[pid]
+
+        img = cv2.imread(path)
+        if img is None or img.size == 0:
+            return None
+
+        desc = _face_appearance_descriptor(img)
+        self._thumb_desc_cache[pid] = desc
+        self._thumb_desc_stamp[pid] = stamp
+        return desc
+
+    def _match_faces(self, frame: np.ndarray, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         reg = P.list_players()
         out: List[Dict[str, Any]] = []
         if not faces:
@@ -438,6 +488,7 @@ class GestureStream:
 
         buckets: Dict[int, Dict[str, Any]] = {}
         id_to_name: Dict[int, str] = {}  # Map player ID to name
+        thumb_desc_by_id: Dict[int, np.ndarray] = {}
         for p in reg:
             emb = np.array(p["embedding"], dtype=np.float32)
             d = int(emb.shape[0])
@@ -446,6 +497,9 @@ class GestureStream:
             buckets[d]["ids"].append(p["id"])
             buckets[d]["embs"].append(emb)
             id_to_name[p["id"]] = p.get("name", f"Player {p['id']}")  # Store name
+            td = self._player_thumb_descriptor(p)
+            if td is not None:
+                thumb_desc_by_id[int(p["id"])] = td
         for d in list(buckets.keys()):
             E = np.stack(buckets[d]["embs"], axis=0)
             buckets[d]["norm"] = E / (np.linalg.norm(E, axis=1, keepdims=True) + 1e-6)
@@ -458,9 +512,36 @@ class GestureStream:
             emb = f["embedding"].astype(np.float32)
             d = int(emb.shape[0])
             pid, pname, simv = None, None, 0.0
+            active_threshold = self._face.sim_threshold
+            active_margin = confidence_margin
             if d in buckets:
                 embn = emb / (np.linalg.norm(emb) + 1e-6)
                 sims = buckets[d]["norm"] @ embn
+
+                # LANDMARKS эмбеддинг (936) слаб для multi-person.
+                # Усиливаем матч по внешнему виду лица с миниатюрами из БД.
+                if d == 936:
+                    face_app = f.get("appearance")
+                    if face_app is None:
+                        x1, y1, x2, y2 = f["bbox"]
+                        crop = frame[max(0, y1):min(frame.shape[0], y2), max(0, x1):min(frame.shape[1], x2)]
+                        face_app = _face_appearance_descriptor(crop)
+
+                    ids = buckets[d]["ids"]
+                    app_sims = np.array(
+                        [
+                            float(face_app @ thumb_desc_by_id[i]) if i in thumb_desc_by_id else np.nan
+                            for i in ids
+                        ],
+                        dtype=np.float32,
+                    )
+                    valid = ~np.isnan(app_sims)
+                    if np.any(valid):
+                        combined = sims.copy()
+                        combined[valid] = 0.85 * app_sims[valid] + 0.15 * sims[valid]
+                        sims = combined
+                        active_threshold = float(os.getenv("FACE_LANDMARKS_SIM_THRESHOLD", "0.62"))
+                        active_margin = float(os.getenv("FACE_LANDMARKS_MATCH_MARGIN", "0.015"))
 
                 # Find best match with confidence check
                 sorted_indices = np.argsort(sims)[::-1]  # Sort descending
@@ -472,12 +553,12 @@ class GestureStream:
                     second_best_sim = float(sims[sorted_indices[1]])
                     margin = best_sim - second_best_sim
                     # Жесткий margin применяем только в пограничных случаях.
-                    if best_sim < (self._face.sim_threshold + 0.10):
-                        is_confident = margin >= confidence_margin
+                    if best_sim < (active_threshold + 0.10):
+                        is_confident = margin >= active_margin
 
                 simv = best_sim
                 # Only assign ID if similarity is above threshold AND match is confident
-                if simv >= self._face.sim_threshold and is_confident:
+                if simv >= active_threshold and is_confident:
                     pid = buckets[d]["ids"][sorted_indices[0]]
                     pname = id_to_name.get(pid)  # Get name from map
             out.append({"bbox": f["bbox"], "id": pid, "name": pname, "sim": simv})
@@ -638,7 +719,7 @@ class GestureStream:
                         res = await asyncio.to_thread(self._det.process_frame, frame)
                         digit = int(res.digit)
                     faces = await asyncio.to_thread(self._safe_face_analyze, frame)
-                    matches = self._match_faces(faces)
+                    matches = self._match_faces(frame, faces)
 
                     if self.gestures_enabled and res is not None:
                         h, w = frame.shape[:2]
