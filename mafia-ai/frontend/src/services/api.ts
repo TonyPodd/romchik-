@@ -9,6 +9,8 @@ const envApiBase = (import.meta.env.VITE_API_BASE || '').trim();
 const API_BASE = envApiBase || (isLocalDevHost ? '/api' : `http://${CURRENT_HOST}:8000`);
 const FETCH_TIMEOUT = 10000; // 10 seconds
 const ENROLL_FINISH_TIMEOUT = 60000; // CompreFace enrollment can take longer
+const VOICE_REGISTER_TIMEOUT = 120000; // First voice registration can be slow on cold start
+const SPEECH_RECOGNIZE_TIMEOUT = 90000; // ASR model warmup/transcription may take longer
 
 // Helper function with timeout
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeout = FETCH_TIMEOUT): Promise<Response> {
@@ -248,7 +250,7 @@ export async function voiceRegister(
         sample_rate: sampleRate,
       }),
     },
-    30000,
+    VOICE_REGISTER_TIMEOUT,
   );
   return res.json();
 }
@@ -375,7 +377,7 @@ export async function speechRecognizeChunk(
         add_to_logs: addToLogs,
       }),
     },
-    30000,
+    SPEECH_RECOGNIZE_TIMEOUT,
   );
   return res.json();
 }

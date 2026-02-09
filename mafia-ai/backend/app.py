@@ -299,17 +299,18 @@ async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
         try:
             from infrastructure.audio.faster_whisper_asr import FasterWhisperASR
 
-            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "base"))
+            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "tiny"))
             language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
             device = os.getenv("SPEECH_LOG_ASR_DEVICE", "cpu")
             compute_type = os.getenv("SPEECH_LOG_ASR_COMPUTE_TYPE", "int8")
 
-            _speech_asr_model = FasterWhisperASR(
-                model_size=model_size,
-                language=language,
-                device=device,
-                compute_type=compute_type,
-                num_workers=1,
+            _speech_asr_model = await asyncio.to_thread(
+                FasterWhisperASR,
+                model_size,
+                device,
+                compute_type,
+                language,
+                1,
             )
             return _speech_asr_model, None
         except Exception as e:
@@ -1028,11 +1029,12 @@ async def voice_register(body: _VoiceRegisterIn):
         # Convert audio samples from lists to numpy arrays
         audio_arrays = [np.array(sample, dtype=np.float32) for sample in body.audio_samples]
 
-        success = vs.register_voice(
-            player_id=body.player_id,
-            player_name=body.player_name,
-            audio_samples=audio_arrays,
-            sr=body.sample_rate
+        success = await asyncio.to_thread(
+            vs.register_voice,
+            body.player_id,
+            body.player_name,
+            audio_arrays,
+            body.sample_rate,
         )
 
         if success:
@@ -1080,7 +1082,7 @@ async def voice_identify(body: _VoiceIdentifyIn):
         # Convert audio from list to numpy array
         audio_array = np.array(body.audio, dtype=np.float32)
 
-        result = vs.identify_speaker(audio_array, sr=body.sample_rate)
+        result = await asyncio.to_thread(vs.identify_speaker, audio_array, body.sample_rate)
 
         if result:
             player_id, player_name, confidence = result
@@ -1113,22 +1115,29 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
         speaker_name: Optional[str] = None
         confidence = 0.0
 
-        speaker = vs.identify_speaker(audio_array, sr=body.sample_rate)
+        speaker = await asyncio.to_thread(vs.identify_speaker, audio_array, body.sample_rate)
         if speaker:
             speaker_id, speaker_name, confidence = speaker
         else:
-            top_matches = vs.identify_top_k(audio_array, sr=body.sample_rate, k=1)
+            top_matches = await asyncio.to_thread(vs.identify_top_k, audio_array, body.sample_rate, 1)
             if top_matches:
                 top = top_matches[0]
                 speaker_id = int(top.get("player_id")) if top.get("player_id") is not None else None
                 speaker_name = str(top.get("player_name") or "").strip() or None
                 confidence = float(top.get("score") or 0.0)
             else:
-                guess = _voice_best_guess(vs, audio_array, body.sample_rate)
+                guess = await asyncio.to_thread(_voice_best_guess, vs, audio_array, body.sample_rate)
                 if guess:
                     speaker_id, speaker_name, confidence = guess
 
-        text, asr_error = await _transcribe_speech_audio(audio_array, body.sample_rate)
+        asr_timeout = float(os.getenv("SPEECH_LOG_ASR_TIMEOUT_SEC", "22"))
+        try:
+            text, asr_error = await asyncio.wait_for(
+                _transcribe_speech_audio(audio_array, body.sample_rate),
+                timeout=max(1.0, asr_timeout),
+            )
+        except asyncio.TimeoutError:
+            text, asr_error = "", f"ASR timeout after {asr_timeout:.0f}s"
         label = _speech_speaker_label(speaker_id, speaker_name)
         line = _speech_line(label, text)
 
