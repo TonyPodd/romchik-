@@ -182,6 +182,14 @@ class CompreFaceClient:
         except Exception as e:
             return False, str(e)
 
+        # CompreFace 1.2 for POST /recognition/faces returns:
+        # {"image_id": "...", "subject": "..."}
+        image_id = data.get("image_id")
+        resp_subject = data.get("subject")
+        if isinstance(image_id, str) and image_id.strip():
+            if not resp_subject or str(resp_subject).strip() == subject:
+                return True, None
+
         result = data.get("result")
         ok = bool(result)
         if ok:
