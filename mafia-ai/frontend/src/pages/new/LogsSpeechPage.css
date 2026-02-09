@@ -1,0 +1,110 @@
+.speech-logs {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.speech-logs__header {
+  padding: 0.95rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.speech-logs__title {
+  margin: 0;
+  font-size: clamp(1.2rem, 2.4vw, 1.65rem);
+}
+
+.speech-logs__subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--text-soft);
+  font-size: 0.84rem;
+}
+
+.speech-logs__status {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.speech-logs__actions {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.speech-logs__notice {
+  padding: 0.7rem 0.85rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.speech-logs__error {
+  color: #ffdbe4;
+}
+
+.speech-logs__warn {
+  color: #f8f1d1;
+}
+
+.speech-logs__list-card {
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.speech-logs__list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.speech-logs__list-head h2 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.speech-logs__list-head span {
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.speech-logs__list {
+  max-height: min(60vh, 620px);
+  overflow: auto;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.speech-logs__item {
+  border: 1px solid rgba(179, 191, 183, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.55rem 0.62rem;
+  display: grid;
+  gap: 0.24rem;
+}
+
+.speech-logs__line {
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.speech-logs__meta {
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.speech-logs__empty {
+  border: 1px dashed rgba(179, 191, 183, 0.28);
+  border-radius: 12px;
+  padding: 0.75rem;
+  text-align: center;
+  color: var(--text-soft);
+  font-size: 0.83rem;
+}
