@@ -64,6 +64,15 @@ def _point_in_poly(px: Tuple[int, int], poly: np.ndarray) -> bool:
     return cv2.pointPolygonTest(poly.astype(np.int32), (int(px[0]), int(px[1])), False) >= 0
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _face_appearance_descriptor(face_bgr: np.ndarray) -> np.ndarray:
     """
     Легкий внешний вид-дескриптор (fallback, когда нет ArcFace).
@@ -814,7 +823,7 @@ class GestureStream:
                     res = None
                     if self.gestures_enabled:
                         res = await asyncio.to_thread(self._det.process_frame, frame)
-                        digit = int(res.digit)
+                        digit = _safe_int(getattr(res, "digit", None), default=-1)
                     faces = await asyncio.to_thread(self._safe_face_analyze, frame)
                     matches = await asyncio.to_thread(self._match_faces, frame, faces)
 
@@ -823,7 +832,10 @@ class GestureStream:
                         poly_px = self._poly_px(w, h)
                         fist_on_table = res.fist_on_table
                         if poly_px is not None:
-                            fist_on_table = any((hnd.count == 0 and _point_in_poly(hnd.center, poly_px)) for hnd in res.hands)
+                            fist_on_table = any(
+                                (_safe_int(getattr(hnd, "count", None), default=0) == 0 and _point_in_poly(hnd.center, poly_px))
+                                for hnd in res.hands
+                            )
 
                         def center_face(bb):
                             x1, y1, x2, y2 = bb
@@ -835,7 +847,7 @@ class GestureStream:
                             if hasattr(h, "extended") and h.extended is not None:
                                 cnt = int(sum(1 for v in h.extended if v))
                             else:
-                                cnt = int(getattr(h, "count", 0))
+                                cnt = _safe_int(getattr(h, "count", None), default=0)
                             name = {0: "fist", 1: "one", 2: "two", 3: "three", 4: "four", 5: "open"}.get(cnt, f"{cnt}-fingers")
                             return name, cnt
 
@@ -850,7 +862,7 @@ class GestureStream:
                             hands_out.append({
                                 "bbox": hnd.bbox,
                                 "center": hnd.center,
-                                "count": int(hnd.count),
+                                "count": _safe_int(getattr(hnd, "count", None), default=0),
                                 "extended": hnd.extended,
                                 "owner_id": owner,
                                 "label": label,
