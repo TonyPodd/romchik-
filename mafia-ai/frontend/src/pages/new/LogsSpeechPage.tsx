@@ -5,7 +5,8 @@ import * as api from '../../services/api';
 import './LogsSpeechPage.css';
 
 const TARGET_SAMPLE_RATE = 16000;
-const CHUNK_MS = 3200;
+const CHUNK_MS = 2400;
+const MAX_PENDING_CHUNKS = 4;
 
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 
@@ -66,8 +67,34 @@ function wsUrl(): string {
   return `${protocol}://${host}/api/ws`;
 }
 
+function isGenericSpeakerLabel(value: string): boolean {
+  return /^\s*(игрок|player|говорящий|speaker)\s+/i.test(value) || /^\s*(\?|неизвестный|unknown)\s*$/i.test(value);
+}
+
+function resolveSpeakerLabel(log: api.SpeechLogEntry, playerNames: Map<number, string>): string {
+  const playerName = log.speaker_id != null ? playerNames.get(Number(log.speaker_id)) : undefined;
+  if (playerName && !isGenericSpeakerLabel(playerName)) {
+    return playerName;
+  }
+
+  if (log.speaker_label && !isGenericSpeakerLabel(log.speaker_label)) {
+    return log.speaker_label;
+  }
+
+  if (log.speaker_name && !isGenericSpeakerLabel(log.speaker_name)) {
+    return log.speaker_name;
+  }
+
+  if (log.speaker_id != null) {
+    return `Игрок ${log.speaker_id}`;
+  }
+
+  return 'Неизвестный';
+}
+
 export function LogsSpeechPage() {
   const [logs, setLogs] = useState<api.SpeechLogEntry[]>([]);
+  const [playerNames, setPlayerNames] = useState<Map<number, string>>(new Map());
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [gameRunning, setGameRunning] = useState<boolean | null>(null);
@@ -82,6 +109,7 @@ export function LogsSpeechPage() {
   const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const sampleRateRef = useRef<number>(TARGET_SAMPLE_RATE);
   const pcmChunksRef = useRef<Float32Array[]>([]);
+  const pendingChunksRef = useRef<Array<{ samples: Float32Array; sampleRate: number }>>([]);
   const flushTimerRef = useRef<number | null>(null);
 
   const startInFlightRef = useRef(false);
@@ -90,12 +118,32 @@ export function LogsSpeechPage() {
 
   const formattedLogs = useMemo(
     () =>
-      logs.map((log) => ({
-        ...log,
-        line: log.line || `"${log.speaker_label || 'говорящий ?'}"(текст): ${(log.text || '').trim() || '...'};`,
-      })),
-    [logs],
+      logs.map((log) => {
+        const label = resolveSpeakerLabel(log, playerNames);
+        return {
+          ...log,
+          speaker_label: label,
+          line: `"${label}"(текст): ${(log.text || '').trim() || '...'};`,
+        };
+      }),
+    [logs, playerNames],
   );
+
+  async function loadPlayersMap() {
+    try {
+      const response = await api.listPlayers();
+      const map = new Map<number, string>();
+      (response.players || []).forEach((player) => {
+        const name = (player.name || '').trim();
+        if (name) {
+          map.set(player.id, name);
+        }
+      });
+      setPlayerNames(map);
+    } catch {
+      // Optional fallback, logs continue to work without players map.
+    }
+  }
 
   function stopTracks() {
     if (streamRef.current) {
@@ -149,7 +197,23 @@ export function LogsSpeechPage() {
     } finally {
       processInFlightRef.current = false;
       setProcessing(false);
+      if (pendingChunksRef.current.length > 0) {
+        void drainPendingChunks();
+      }
     }
+  }
+
+  async function drainPendingChunks() {
+    if (processInFlightRef.current) {
+      return;
+    }
+
+    const next = pendingChunksRef.current.shift();
+    if (!next) {
+      return;
+    }
+
+    await processSamples(next.samples, next.sampleRate);
   }
 
   async function flushBufferedSamples() {
@@ -160,7 +224,12 @@ export function LogsSpeechPage() {
       return;
     }
 
-    await processSamples(merged, sampleRateRef.current);
+    pendingChunksRef.current.push({ samples: merged, sampleRate: sampleRateRef.current });
+    if (pendingChunksRef.current.length > MAX_PENDING_CHUNKS) {
+      const dropCount = pendingChunksRef.current.length - MAX_PENDING_CHUNKS;
+      pendingChunksRef.current.splice(0, dropCount);
+    }
+    void drainPendingChunks();
   }
 
   async function startRecording() {
@@ -217,6 +286,7 @@ export function LogsSpeechPage() {
       processorNodeRef.current = processor;
       sampleRateRef.current = context.sampleRate;
       pcmChunksRef.current = [];
+      pendingChunksRef.current = [];
 
       if (flushTimerRef.current !== null) {
         window.clearInterval(flushTimerRef.current);
@@ -266,6 +336,7 @@ export function LogsSpeechPage() {
       }
 
       pcmChunksRef.current = [];
+      pendingChunksRef.current = [];
       stopTracks();
       setRecording(false);
     } finally {
@@ -310,6 +381,7 @@ export function LogsSpeechPage() {
       }
     }
 
+    void loadPlayersMap();
     void loadLogs();
     void syncRecordingWithGame();
 

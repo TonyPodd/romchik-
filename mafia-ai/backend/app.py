@@ -75,6 +75,8 @@ _speech_logs_counter: int = 0
 _speech_asr_model: Optional[Any] = None
 _speech_asr_init_error: Optional[str] = None
 _speech_asr_lock = asyncio.Lock()
+_player_name_cache: Dict[int, str] = {}
+_player_name_cache_mtime: float = -1.0
 
 BOUNDARY = "frame"
 
@@ -268,18 +270,141 @@ def _players_add_safe(
             return P.add_player(name=name, embedding=embedding, thumb=thumb_rel)  # type: ignore[call-arg]
 
 
+def _is_generic_player_name(name: str) -> bool:
+    s = (name or "").strip().lower()
+    return (
+        s.startswith("игрок ")
+        or s.startswith("player ")
+        or s.startswith("говорящий")
+        or s.startswith("speaker")
+        or s in {"?", "неизвестный", "unknown"}
+    )
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _refresh_player_name_cache() -> None:
+    global _player_name_cache, _player_name_cache_mtime
+    db_path = os.path.join("storage", "players.json")
+    try:
+        mtime = float(os.path.getmtime(db_path))
+    except OSError:
+        mtime = -1.0
+
+    if mtime == _player_name_cache_mtime:
+        return
+
+    name_map: Dict[int, str] = {}
+    try:
+        for p in P.list_players():
+            pid = int(p.get("id")) if p.get("id") is not None else None
+            pname = (p.get("name") or "").strip()
+            if pid is not None and pname:
+                name_map[pid] = pname
+    except Exception:
+        name_map = {}
+
+    _player_name_cache = name_map
+    _player_name_cache_mtime = mtime
+
+
 def _speech_speaker_label(speaker_id: Optional[int], speaker_name: Optional[str]) -> str:
-    """Build a short speaker label for log output."""
-    if speaker_id is not None:
-        return f"говорящий {speaker_id}"
-    if speaker_name and speaker_name.strip():
+    """Resolve speaker label to player's nickname when possible."""
+    normalized_id = _safe_int(speaker_id)
+    if normalized_id is not None:
+        _refresh_player_name_cache()
+        cached_name = _player_name_cache.get(normalized_id)
+        if cached_name and not _is_generic_player_name(cached_name):
+            return cached_name
+
+        # fallback to voice profile name when it's not generic
+        try:
+            profile = get_voice_service().profiles.get(normalized_id)
+            profile_name = (profile.player_name if profile else "").strip()
+            if profile_name and not _is_generic_player_name(profile_name):
+                return profile_name
+        except Exception:
+            pass
+
+    if speaker_name and speaker_name.strip() and not _is_generic_player_name(speaker_name):
         return speaker_name.strip()
-    return "говорящий ?"
+    if normalized_id is not None:
+        return f"Игрок {normalized_id}"
+    return "Неизвестный"
 
 
 def _speech_line(label: str, text: str) -> str:
     clean_text = (text or "").strip() or "..."
     return f"\"{label}\"(текст): {clean_text};"
+
+
+def _speech_logs_has_voice(vs: Any, audio: np.ndarray, sample_rate: int) -> bool:
+    """Lightweight VAD guard to avoid transcribing pure noise/silence chunks."""
+    try:
+        return bool(
+            vs.detect_voice_activity(
+                audio,
+                sample_rate,
+                float(os.getenv("SPEECH_LOGS_VAD_ENERGY_THRESHOLD", "0.008")),
+                float(os.getenv("SPEECH_LOGS_VAD_MIN_DURATION_SEC", "0.28")),
+            )
+        )
+    except Exception:
+        return True
+
+
+def _prepare_audio_for_asr(audio: np.ndarray, sample_rate: int) -> Tuple[np.ndarray, int]:
+    """Prepare noisy realtime chunks for Whisper: resample, trim silence, normalize RMS."""
+    prepared = np.asarray(audio, dtype=np.float32).flatten()
+    prepared = np.nan_to_num(prepared, copy=False)
+    if prepared.size == 0:
+        return prepared, 16000
+
+    sr = int(sample_rate) if sample_rate else 16000
+    sr = max(8000, sr)
+
+    if sr != 16000:
+        try:
+            import librosa
+
+            prepared = librosa.resample(prepared, orig_sr=sr, target_sr=16000).astype(np.float32)
+            sr = 16000
+        except Exception:
+            pass
+
+    try:
+        import librosa
+
+        trim_db = float(os.getenv("SPEECH_LOG_ASR_TRIM_TOP_DB", "26"))
+        trimmed, _ = librosa.effects.trim(prepared, top_db=trim_db)
+        if trimmed.size >= max(400, int(0.1 * sr)):
+            prepared = trimmed.astype(np.float32)
+    except Exception:
+        pass
+
+    peak = float(np.max(np.abs(prepared)))
+    if peak > 1e-6:
+        prepared = prepared / peak
+
+    rms = float(np.sqrt(np.mean(prepared * prepared))) if prepared.size > 0 else 0.0
+    target_rms = float(os.getenv("SPEECH_LOG_ASR_TARGET_RMS", "0.10"))
+    if rms > 1e-6:
+        gain = target_rms / rms
+        gain = max(0.8, min(gain, 3.0))
+        prepared = np.clip(prepared * gain, -1.0, 1.0)
+
+    noise_gate = float(os.getenv("SPEECH_LOG_ASR_NOISE_GATE", "0.006"))
+    if noise_gate > 0:
+        prepared = np.where(np.abs(prepared) < noise_gate, 0.0, prepared).astype(np.float32)
+
+    return prepared.astype(np.float32), sr
 
 
 async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
@@ -304,12 +429,13 @@ async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
             device = os.getenv("SPEECH_LOG_ASR_DEVICE", "cpu")
             compute_type = os.getenv("SPEECH_LOG_ASR_COMPUTE_TYPE", "int8")
 
-            _speech_asr_model = FasterWhisperASR(
-                model_size=model_size,
-                language=language,
-                device=device,
-                compute_type=compute_type,
-                num_workers=1,
+            _speech_asr_model = await asyncio.to_thread(
+                FasterWhisperASR,
+                model_size,
+                device,
+                compute_type,
+                language,
+                1,
             )
             return _speech_asr_model, None
         except Exception as e:
@@ -323,16 +449,12 @@ async def _transcribe_speech_audio(audio: np.ndarray, sample_rate: int) -> tuple
     if asr_model is None:
         return "", init_error
     try:
-        audio_for_asr = np.asarray(audio, dtype=np.float32).flatten()
+        audio_for_asr, sr_for_asr = _prepare_audio_for_asr(audio, sample_rate)
         if audio_for_asr.size == 0:
             return "", None
-        audio_for_asr = np.nan_to_num(audio_for_asr, copy=False)
-        peak = float(np.max(np.abs(audio_for_asr)))
-        if peak > 1e-6:
-            audio_for_asr = audio_for_asr / peak
 
         language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
-        transcription = await asr_model.transcribe_async(audio_for_asr, sample_rate=sample_rate, language=language)
+        transcription = await asr_model.transcribe_async(audio_for_asr, sample_rate=sr_for_asr, language=language)
         return (transcription.text or "").strip(), None
     except Exception as e:
         return "", str(e)
@@ -1028,11 +1150,12 @@ async def voice_register(body: _VoiceRegisterIn):
         # Convert audio samples from lists to numpy arrays
         audio_arrays = [np.array(sample, dtype=np.float32) for sample in body.audio_samples]
 
-        success = vs.register_voice(
-            player_id=body.player_id,
-            player_name=body.player_name,
-            audio_samples=audio_arrays,
-            sr=body.sample_rate
+        success = await asyncio.to_thread(
+            vs.register_voice,
+            body.player_id,
+            body.player_name,
+            audio_arrays,
+            body.sample_rate,
         )
 
         if success:
@@ -1080,7 +1203,7 @@ async def voice_identify(body: _VoiceIdentifyIn):
         # Convert audio from list to numpy array
         audio_array = np.array(body.audio, dtype=np.float32)
 
-        result = vs.identify_speaker(audio_array, sr=body.sample_rate)
+        result = await asyncio.to_thread(vs.identify_speaker, audio_array, body.sample_rate)
 
         if result:
             player_id, player_name, confidence = result
@@ -1109,31 +1232,60 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
         audio_array = np.nan_to_num(audio_array, copy=False)
 
         vs = get_voice_service()
+        has_voice = await asyncio.to_thread(_speech_logs_has_voice, vs, audio_array, body.sample_rate)
         speaker_id: Optional[int] = None
         speaker_name: Optional[str] = None
         confidence = 0.0
 
-        speaker = vs.identify_speaker(audio_array, sr=body.sample_rate)
-        if speaker:
-            speaker_id, speaker_name, confidence = speaker
-        else:
-            top_matches = vs.identify_top_k(audio_array, sr=body.sample_rate, k=1)
-            if top_matches:
-                top = top_matches[0]
-                speaker_id = int(top.get("player_id")) if top.get("player_id") is not None else None
-                speaker_name = str(top.get("player_name") or "").strip() or None
-                confidence = float(top.get("score") or 0.0)
-            else:
-                guess = _voice_best_guess(vs, audio_array, body.sample_rate)
-                if guess:
-                    speaker_id, speaker_name, confidence = guess
+        text = ""
+        asr_error: Optional[str] = None
 
-        text, asr_error = await _transcribe_speech_audio(audio_array, body.sample_rate)
+        if has_voice:
+            speaker = await asyncio.to_thread(vs.identify_speaker, audio_array, body.sample_rate)
+            if speaker:
+                speaker_id, speaker_name, confidence = speaker
+            else:
+                top_matches = await asyncio.to_thread(vs.identify_top_k, audio_array, body.sample_rate, 1)
+                if top_matches:
+                    top = top_matches[0]
+                    speaker_id = int(top.get("player_id")) if top.get("player_id") is not None else None
+                    speaker_name = str(top.get("player_name") or "").strip() or None
+                    confidence = float(top.get("score") or 0.0)
+                else:
+                    guess = await asyncio.to_thread(_voice_best_guess, vs, audio_array, body.sample_rate)
+                    if guess:
+                        speaker_id, speaker_name, confidence = guess
+
+            asr_timeout = float(os.getenv("SPEECH_LOG_ASR_TIMEOUT_SEC", "30"))
+            try:
+                text, asr_error = await asyncio.wait_for(
+                    _transcribe_speech_audio(audio_array, body.sample_rate),
+                    timeout=max(1.0, asr_timeout),
+                )
+            except asyncio.TimeoutError:
+                text, asr_error = "", f"ASR timeout after {asr_timeout:.0f}s"
+        else:
+            asr_error = None
+
         label = _speech_speaker_label(speaker_id, speaker_name)
         line = _speech_line(label, text)
 
         entry: Optional[Dict[str, Any]] = None
         if body.add_to_logs:
+            if not has_voice and os.getenv("SPEECH_LOGS_INCLUDE_SILENCE", "0").strip().lower() in {"0", "false", "no"}:
+                return {
+                    "ok": True,
+                    "speaker_id": None,
+                    "speaker_name": None,
+                    "speaker_label": "Неизвестный",
+                    "confidence": 0.0,
+                    "text": "...",
+                    "line": "\"Неизвестный\"(текст): ...;",
+                    "asr_error": None,
+                    "entry": None,
+                    "skipped": True,
+                    "reason": "no_speech",
+                }
             async with _speech_logs_lock:
                 _speech_logs_counter += 1
                 entry = {
@@ -1173,7 +1325,24 @@ async def voice_logs(limit: int = 200):
     n = max(1, min(int(limit), 1000))
     async with _speech_logs_lock:
         logs = list(_speech_logs[-n:])
-    return {"ok": True, "logs": logs}
+
+    # Re-resolve labels on read so old logs also show current player nicknames.
+    normalized_logs: List[Dict[str, Any]] = []
+    for entry in logs:
+        speaker_id = _safe_int(entry.get("speaker_id"))
+        speaker_name = entry.get("speaker_name")
+        if speaker_name is not None:
+            speaker_name = str(speaker_name)
+
+        text = str((entry.get("text") or "").strip() or "...")
+        label = _speech_speaker_label(speaker_id, speaker_name)
+
+        normalized = dict(entry)
+        normalized["speaker_id"] = speaker_id
+        normalized["speaker_label"] = label
+        normalized["line"] = _speech_line(label, text)
+        normalized_logs.append(normalized)
+    return {"ok": True, "logs": normalized_logs}
 
 
 @app.post("/voice/logs/clear")

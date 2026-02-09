@@ -9,6 +9,8 @@ const envApiBase = (import.meta.env.VITE_API_BASE || '').trim();
 const API_BASE = envApiBase || (isLocalDevHost ? '/api' : `http://${CURRENT_HOST}:8000`);
 const FETCH_TIMEOUT = 10000; // 10 seconds
 const ENROLL_FINISH_TIMEOUT = 60000; // CompreFace enrollment can take longer
+const VOICE_REGISTER_TIMEOUT = 120000; // First voice registration can be slow on cold start
+const SPEECH_RECOGNIZE_TIMEOUT = 120000; // ASR warmup on CPU can be slow
 
 // Helper function with timeout
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeout = FETCH_TIMEOUT): Promise<Response> {
@@ -112,6 +114,52 @@ export async function setVideoFaceMatch(enabled: boolean): Promise<{ ok: boolean
 
 export function getVideoStreamUrl(): string {
   return `${API_BASE}/video/mjpeg`;
+}
+
+export type TablePoint = [number, number];
+
+export interface TableStatusResponse {
+  poly_norm: TablePoint[] | null;
+}
+
+export interface TableUpdateResponse {
+  ok: boolean;
+  poly_norm?: TablePoint[] | null;
+  error?: string;
+}
+
+export async function getTableStatus(): Promise<TableStatusResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/status`);
+  return res.json();
+}
+
+export async function tableAutoDetect(): Promise<TableUpdateResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/autodetect`, { method: 'POST' }, 30000);
+  return res.json();
+}
+
+export async function tableSetRoi(poly: TablePoint[]): Promise<TableUpdateResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/set_roi`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ poly }),
+  });
+  return res.json();
+}
+
+export async function tableClearRoi(): Promise<TableUpdateResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/clear`, { method: 'POST' });
+  return res.json();
+}
+
+export async function tableBeginCalibration(): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/begin`, { method: 'POST' });
+  return res.json();
+}
+
+export async function tableEndCalibration(): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/end`, { method: 'POST' });
+  return res.json();
 }
 
 // Player enrollment API
@@ -248,7 +296,7 @@ export async function voiceRegister(
         sample_rate: sampleRate,
       }),
     },
-    30000,
+    VOICE_REGISTER_TIMEOUT,
   );
   return res.json();
 }
@@ -356,6 +404,8 @@ export interface SpeechRecognizeResponse {
   line?: string;
   asr_error?: string | null;
   entry?: SpeechLogEntry | null;
+  skipped?: boolean;
+  reason?: string;
   error?: string;
 }
 
@@ -375,7 +425,7 @@ export async function speechRecognizeChunk(
         add_to_logs: addToLogs,
       }),
     },
-    30000,
+    SPEECH_RECOGNIZE_TIMEOUT,
   );
   return res.json();
 }
