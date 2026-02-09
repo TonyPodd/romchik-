@@ -116,6 +116,52 @@ export function getVideoStreamUrl(): string {
   return `${API_BASE}/video/mjpeg`;
 }
 
+export type TablePoint = [number, number];
+
+export interface TableStatusResponse {
+  poly_norm: TablePoint[] | null;
+}
+
+export interface TableUpdateResponse {
+  ok: boolean;
+  poly_norm?: TablePoint[] | null;
+  error?: string;
+}
+
+export async function getTableStatus(): Promise<TableStatusResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/status`);
+  return res.json();
+}
+
+export async function tableAutoDetect(): Promise<TableUpdateResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/autodetect`, { method: 'POST' }, 30000);
+  return res.json();
+}
+
+export async function tableSetRoi(poly: TablePoint[]): Promise<TableUpdateResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/set_roi`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ poly }),
+  });
+  return res.json();
+}
+
+export async function tableClearRoi(): Promise<TableUpdateResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/clear`, { method: 'POST' });
+  return res.json();
+}
+
+export async function tableBeginCalibration(): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/begin`, { method: 'POST' });
+  return res.json();
+}
+
+export async function tableEndCalibration(): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/table/end`, { method: 'POST' });
+  return res.json();
+}
+
 // Player enrollment API
 export async function enrollStart(name: string, target: number = 12): Promise<EnrollStartResponse> {
   const res = await fetchWithTimeout(`${API_BASE}/players/enroll/start`, {
@@ -358,6 +404,8 @@ export interface SpeechRecognizeResponse {
   line?: string;
   asr_error?: string | null;
   entry?: SpeechLogEntry | null;
+  skipped?: boolean;
+  reason?: string;
   error?: string;
 }
 

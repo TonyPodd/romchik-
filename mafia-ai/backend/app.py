@@ -424,7 +424,7 @@ async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
         try:
             from infrastructure.audio.faster_whisper_asr import FasterWhisperASR
 
-            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "small"))
+            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "base"))
             language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
             device = os.getenv("SPEECH_LOG_ASR_DEVICE", "cpu")
             compute_type = os.getenv("SPEECH_LOG_ASR_COMPUTE_TYPE", "int8")
@@ -1256,7 +1256,7 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
                     if guess:
                         speaker_id, speaker_name, confidence = guess
 
-            asr_timeout = float(os.getenv("SPEECH_LOG_ASR_TIMEOUT_SEC", "45"))
+            asr_timeout = float(os.getenv("SPEECH_LOG_ASR_TIMEOUT_SEC", "30"))
             try:
                 text, asr_error = await asyncio.wait_for(
                     _transcribe_speech_audio(audio_array, body.sample_rate),

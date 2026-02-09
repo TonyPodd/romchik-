@@ -44,7 +44,7 @@ class FasterWhisperASR:
         self.model_size = model_size
         self.device = device
         self.language = language
-        self.beam_size = max(1, int(os.getenv("SPEECH_LOG_ASR_BEAM_SIZE", os.getenv("ASR_BEAM_SIZE", "6"))))
+        self.beam_size = max(1, int(os.getenv("SPEECH_LOG_ASR_BEAM_SIZE", os.getenv("ASR_BEAM_SIZE", "4"))))
         self.best_of = max(1, int(os.getenv("SPEECH_LOG_ASR_BEST_OF", os.getenv("ASR_BEST_OF", str(self.beam_size)))))
         self.temperature = float(os.getenv("SPEECH_LOG_ASR_TEMPERATURE", os.getenv("ASR_TEMPERATURE", "0.0")))
         self.vad_threshold = float(os.getenv("SPEECH_LOG_ASR_VAD_THRESHOLD", "0.35"))
@@ -59,7 +59,7 @@ class FasterWhisperASR:
             "SPEECH_LOG_ASR_INITIAL_PROMPT",
             "Диалог игроков в мафию на русском языке. Используй обычную пунктуацию и без префиксов говорящих.",
         )
-        self.retry_without_vad = os.getenv("SPEECH_LOG_ASR_RETRY_WITHOUT_VAD", "1").strip().lower() not in {"0", "false", "no"}
+        self.retry_without_vad = os.getenv("SPEECH_LOG_ASR_RETRY_WITHOUT_VAD", "0").strip().lower() not in {"0", "false", "no"}
 
         # Загружаем модель
         self.model = WhisperModel(
@@ -145,8 +145,8 @@ class FasterWhisperASR:
                 audio,
                 language=language or self.language,
                 task=task,
-                beam_size=max(self.beam_size, 8),
-                best_of=max(self.best_of, 8),
+                beam_size=max(self.beam_size, 6),
+                best_of=max(self.best_of, 6),
                 temperature=0.0,
                 condition_on_previous_text=False,
                 initial_prompt=self.initial_prompt,

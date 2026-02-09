@@ -5,8 +5,8 @@ import * as api from '../../services/api';
 import './LogsSpeechPage.css';
 
 const TARGET_SAMPLE_RATE = 16000;
-const CHUNK_MS = 5000;
-const MAX_PENDING_CHUNKS = 6;
+const CHUNK_MS = 2400;
+const MAX_PENDING_CHUNKS = 4;
 
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 
