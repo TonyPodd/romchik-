@@ -970,12 +970,20 @@ class GestureStream:
                         face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
 
                         def _label_for_hand(h) -> Tuple[str, int]:
-                            if hasattr(h, "extended") and h.extended is not None:
-                                cnt = int(sum(1 for v in h.extended if v))
+                            ext = getattr(h, "extended", None)
+                            if isinstance(ext, dict):
+                                cnt = int(sum(1 for v in ext.values() if bool(v)))
+                            elif isinstance(ext, (list, tuple)):
+                                cnt = int(sum(1 for v in ext if bool(v)))
                             else:
                                 cnt = _safe_int(getattr(h, "count", None), default=0)
-                            name = {0: "fist", 1: "one", 2: "two", 3: "three", 4: "four", 5: "open"}.get(cnt, f"{cnt}-fingers")
-                            return name, cnt
+
+                            gesture = str(getattr(h, "gesture", "") or "").strip().lower()
+                            if gesture:
+                                return gesture, cnt
+
+                            fallback = {0: "fist", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5"}.get(cnt, "unknown")
+                            return fallback, cnt
 
                         for hnd in res.hands:
                             owner = None
@@ -990,8 +998,11 @@ class GestureStream:
                                 "center": hnd.center,
                                 "count": _safe_int(getattr(hnd, "count", None), default=0),
                                 "extended": hnd.extended,
+                                "handedness": getattr(hnd, "handedness", ""),
+                                "track_id": getattr(hnd, "track_id", None),
                                 "owner_id": owner,
                                 "label": label,
+                                "gesture": label,
                                 "fingers": fingers,
                             })
 

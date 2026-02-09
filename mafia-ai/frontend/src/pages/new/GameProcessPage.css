@@ -118,6 +118,49 @@
   font-size: 0.72rem;
 }
 
+.process-page__gestures {
+  display: grid;
+  gap: 0.48rem;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.process-page__gesture-item {
+  border: 1px solid rgba(179, 191, 183, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.48rem 0.56rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.process-page__gesture-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.process-page__gesture-main strong {
+  font-size: 0.84rem;
+}
+
+.process-page__gesture-main span {
+  color: var(--text-soft);
+  font-size: 0.76rem;
+}
+
+.process-page__gesture-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.process-page__gesture-meta span {
+  color: var(--text-soft);
+  font-size: 0.74rem;
+}
+
 .process-page__roster {
   display: grid;
   gap: 0.48rem;
