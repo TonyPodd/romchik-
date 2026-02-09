@@ -50,6 +50,11 @@ class FasterWhisperASR:
         self.vad_threshold = float(os.getenv("SPEECH_LOG_ASR_VAD_THRESHOLD", "0.35"))
         self.vad_min_speech_ms = int(os.getenv("SPEECH_LOG_ASR_VAD_MIN_SPEECH_MS", "150"))
         self.vad_min_silence_ms = int(os.getenv("SPEECH_LOG_ASR_VAD_MIN_SILENCE_MS", "220"))
+        self.repetition_penalty = float(os.getenv("SPEECH_LOG_ASR_REPETITION_PENALTY", "1.03"))
+        self.no_repeat_ngram_size = int(os.getenv("SPEECH_LOG_ASR_NO_REPEAT_NGRAM_SIZE", "3"))
+        self.no_speech_threshold = float(os.getenv("SPEECH_LOG_ASR_NO_SPEECH_THRESHOLD", "0.55"))
+        self.log_prob_threshold = float(os.getenv("SPEECH_LOG_ASR_LOG_PROB_THRESHOLD", "-1.2"))
+        self.compression_ratio_threshold = float(os.getenv("SPEECH_LOG_ASR_COMPRESSION_RATIO_THRESHOLD", "2.4"))
         self.initial_prompt = os.getenv(
             "SPEECH_LOG_ASR_INITIAL_PROMPT",
             "Диалог игроков в мафию на русском языке. Используй обычную пунктуацию и без префиксов говорящих.",
@@ -104,6 +109,12 @@ class FasterWhisperASR:
             temperature=self.temperature,
             condition_on_previous_text=False,
             initial_prompt=self.initial_prompt,
+            repetition_penalty=self.repetition_penalty,
+            no_repeat_ngram_size=self.no_repeat_ngram_size,
+            no_speech_threshold=self.no_speech_threshold,
+            log_prob_threshold=self.log_prob_threshold,
+            compression_ratio_threshold=self.compression_ratio_threshold,
+            without_timestamps=True,
             vad_filter=True,  # Используем встроенный VAD
             vad_parameters=dict(
                 threshold=self.vad_threshold,
@@ -139,6 +150,12 @@ class FasterWhisperASR:
                 temperature=0.0,
                 condition_on_previous_text=False,
                 initial_prompt=self.initial_prompt,
+                repetition_penalty=self.repetition_penalty,
+                no_repeat_ngram_size=self.no_repeat_ngram_size,
+                no_speech_threshold=self.no_speech_threshold,
+                log_prob_threshold=self.log_prob_threshold,
+                compression_ratio_threshold=self.compression_ratio_threshold,
+                without_timestamps=True,
                 vad_filter=False,
             )
 

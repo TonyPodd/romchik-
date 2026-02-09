@@ -5,7 +5,8 @@ import * as api from '../../services/api';
 import './LogsSpeechPage.css';
 
 const TARGET_SAMPLE_RATE = 16000;
-const CHUNK_MS = 3200;
+const CHUNK_MS = 5000;
+const MAX_PENDING_CHUNKS = 6;
 
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 
@@ -108,6 +109,7 @@ export function LogsSpeechPage() {
   const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const sampleRateRef = useRef<number>(TARGET_SAMPLE_RATE);
   const pcmChunksRef = useRef<Float32Array[]>([]);
+  const pendingChunksRef = useRef<Array<{ samples: Float32Array; sampleRate: number }>>([]);
   const flushTimerRef = useRef<number | null>(null);
 
   const startInFlightRef = useRef(false);
@@ -195,7 +197,23 @@ export function LogsSpeechPage() {
     } finally {
       processInFlightRef.current = false;
       setProcessing(false);
+      if (pendingChunksRef.current.length > 0) {
+        void drainPendingChunks();
+      }
     }
+  }
+
+  async function drainPendingChunks() {
+    if (processInFlightRef.current) {
+      return;
+    }
+
+    const next = pendingChunksRef.current.shift();
+    if (!next) {
+      return;
+    }
+
+    await processSamples(next.samples, next.sampleRate);
   }
 
   async function flushBufferedSamples() {
@@ -206,7 +224,12 @@ export function LogsSpeechPage() {
       return;
     }
 
-    await processSamples(merged, sampleRateRef.current);
+    pendingChunksRef.current.push({ samples: merged, sampleRate: sampleRateRef.current });
+    if (pendingChunksRef.current.length > MAX_PENDING_CHUNKS) {
+      const dropCount = pendingChunksRef.current.length - MAX_PENDING_CHUNKS;
+      pendingChunksRef.current.splice(0, dropCount);
+    }
+    void drainPendingChunks();
   }
 
   async function startRecording() {
@@ -263,6 +286,7 @@ export function LogsSpeechPage() {
       processorNodeRef.current = processor;
       sampleRateRef.current = context.sampleRate;
       pcmChunksRef.current = [];
+      pendingChunksRef.current = [];
 
       if (flushTimerRef.current !== null) {
         window.clearInterval(flushTimerRef.current);
@@ -312,6 +336,7 @@ export function LogsSpeechPage() {
       }
 
       pcmChunksRef.current = [];
+      pendingChunksRef.current = [];
       stopTracks();
       setRecording(false);
     } finally {

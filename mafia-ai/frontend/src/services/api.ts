@@ -10,7 +10,7 @@ const API_BASE = envApiBase || (isLocalDevHost ? '/api' : `http://${CURRENT_HOST
 const FETCH_TIMEOUT = 10000; // 10 seconds
 const ENROLL_FINISH_TIMEOUT = 60000; // CompreFace enrollment can take longer
 const VOICE_REGISTER_TIMEOUT = 120000; // First voice registration can be slow on cold start
-const SPEECH_RECOGNIZE_TIMEOUT = 90000; // ASR model warmup/transcription may take longer
+const SPEECH_RECOGNIZE_TIMEOUT = 120000; // ASR warmup on CPU can be slow
 
 // Helper function with timeout
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeout = FETCH_TIMEOUT): Promise<Response> {

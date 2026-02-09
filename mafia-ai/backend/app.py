@@ -345,6 +345,68 @@ def _speech_line(label: str, text: str) -> str:
     return f"\"{label}\"(текст): {clean_text};"
 
 
+def _speech_logs_has_voice(vs: Any, audio: np.ndarray, sample_rate: int) -> bool:
+    """Lightweight VAD guard to avoid transcribing pure noise/silence chunks."""
+    try:
+        return bool(
+            vs.detect_voice_activity(
+                audio,
+                sample_rate,
+                float(os.getenv("SPEECH_LOGS_VAD_ENERGY_THRESHOLD", "0.008")),
+                float(os.getenv("SPEECH_LOGS_VAD_MIN_DURATION_SEC", "0.28")),
+            )
+        )
+    except Exception:
+        return True
+
+
+def _prepare_audio_for_asr(audio: np.ndarray, sample_rate: int) -> Tuple[np.ndarray, int]:
+    """Prepare noisy realtime chunks for Whisper: resample, trim silence, normalize RMS."""
+    prepared = np.asarray(audio, dtype=np.float32).flatten()
+    prepared = np.nan_to_num(prepared, copy=False)
+    if prepared.size == 0:
+        return prepared, 16000
+
+    sr = int(sample_rate) if sample_rate else 16000
+    sr = max(8000, sr)
+
+    if sr != 16000:
+        try:
+            import librosa
+
+            prepared = librosa.resample(prepared, orig_sr=sr, target_sr=16000).astype(np.float32)
+            sr = 16000
+        except Exception:
+            pass
+
+    try:
+        import librosa
+
+        trim_db = float(os.getenv("SPEECH_LOG_ASR_TRIM_TOP_DB", "26"))
+        trimmed, _ = librosa.effects.trim(prepared, top_db=trim_db)
+        if trimmed.size >= max(400, int(0.1 * sr)):
+            prepared = trimmed.astype(np.float32)
+    except Exception:
+        pass
+
+    peak = float(np.max(np.abs(prepared)))
+    if peak > 1e-6:
+        prepared = prepared / peak
+
+    rms = float(np.sqrt(np.mean(prepared * prepared))) if prepared.size > 0 else 0.0
+    target_rms = float(os.getenv("SPEECH_LOG_ASR_TARGET_RMS", "0.10"))
+    if rms > 1e-6:
+        gain = target_rms / rms
+        gain = max(0.8, min(gain, 3.0))
+        prepared = np.clip(prepared * gain, -1.0, 1.0)
+
+    noise_gate = float(os.getenv("SPEECH_LOG_ASR_NOISE_GATE", "0.006"))
+    if noise_gate > 0:
+        prepared = np.where(np.abs(prepared) < noise_gate, 0.0, prepared).astype(np.float32)
+
+    return prepared.astype(np.float32), sr
+
+
 async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
     """Lazy-init ASR model for speech logs."""
     global _speech_asr_model, _speech_asr_init_error
@@ -362,7 +424,7 @@ async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
         try:
             from infrastructure.audio.faster_whisper_asr import FasterWhisperASR
 
-            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "base"))
+            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "small"))
             language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
             device = os.getenv("SPEECH_LOG_ASR_DEVICE", "cpu")
             compute_type = os.getenv("SPEECH_LOG_ASR_COMPUTE_TYPE", "int8")
@@ -387,16 +449,12 @@ async def _transcribe_speech_audio(audio: np.ndarray, sample_rate: int) -> tuple
     if asr_model is None:
         return "", init_error
     try:
-        audio_for_asr = np.asarray(audio, dtype=np.float32).flatten()
+        audio_for_asr, sr_for_asr = _prepare_audio_for_asr(audio, sample_rate)
         if audio_for_asr.size == 0:
             return "", None
-        audio_for_asr = np.nan_to_num(audio_for_asr, copy=False)
-        peak = float(np.max(np.abs(audio_for_asr)))
-        if peak > 1e-6:
-            audio_for_asr = audio_for_asr / peak
 
         language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
-        transcription = await asr_model.transcribe_async(audio_for_asr, sample_rate=sample_rate, language=language)
+        transcription = await asr_model.transcribe_async(audio_for_asr, sample_rate=sr_for_asr, language=language)
         return (transcription.text or "").strip(), None
     except Exception as e:
         return "", str(e)
@@ -1174,38 +1232,60 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
         audio_array = np.nan_to_num(audio_array, copy=False)
 
         vs = get_voice_service()
+        has_voice = await asyncio.to_thread(_speech_logs_has_voice, vs, audio_array, body.sample_rate)
         speaker_id: Optional[int] = None
         speaker_name: Optional[str] = None
         confidence = 0.0
 
-        speaker = await asyncio.to_thread(vs.identify_speaker, audio_array, body.sample_rate)
-        if speaker:
-            speaker_id, speaker_name, confidence = speaker
-        else:
-            top_matches = await asyncio.to_thread(vs.identify_top_k, audio_array, body.sample_rate, 1)
-            if top_matches:
-                top = top_matches[0]
-                speaker_id = int(top.get("player_id")) if top.get("player_id") is not None else None
-                speaker_name = str(top.get("player_name") or "").strip() or None
-                confidence = float(top.get("score") or 0.0)
-            else:
-                guess = await asyncio.to_thread(_voice_best_guess, vs, audio_array, body.sample_rate)
-                if guess:
-                    speaker_id, speaker_name, confidence = guess
+        text = ""
+        asr_error: Optional[str] = None
 
-        asr_timeout = float(os.getenv("SPEECH_LOG_ASR_TIMEOUT_SEC", "22"))
-        try:
-            text, asr_error = await asyncio.wait_for(
-                _transcribe_speech_audio(audio_array, body.sample_rate),
-                timeout=max(1.0, asr_timeout),
-            )
-        except asyncio.TimeoutError:
-            text, asr_error = "", f"ASR timeout after {asr_timeout:.0f}s"
+        if has_voice:
+            speaker = await asyncio.to_thread(vs.identify_speaker, audio_array, body.sample_rate)
+            if speaker:
+                speaker_id, speaker_name, confidence = speaker
+            else:
+                top_matches = await asyncio.to_thread(vs.identify_top_k, audio_array, body.sample_rate, 1)
+                if top_matches:
+                    top = top_matches[0]
+                    speaker_id = int(top.get("player_id")) if top.get("player_id") is not None else None
+                    speaker_name = str(top.get("player_name") or "").strip() or None
+                    confidence = float(top.get("score") or 0.0)
+                else:
+                    guess = await asyncio.to_thread(_voice_best_guess, vs, audio_array, body.sample_rate)
+                    if guess:
+                        speaker_id, speaker_name, confidence = guess
+
+            asr_timeout = float(os.getenv("SPEECH_LOG_ASR_TIMEOUT_SEC", "45"))
+            try:
+                text, asr_error = await asyncio.wait_for(
+                    _transcribe_speech_audio(audio_array, body.sample_rate),
+                    timeout=max(1.0, asr_timeout),
+                )
+            except asyncio.TimeoutError:
+                text, asr_error = "", f"ASR timeout after {asr_timeout:.0f}s"
+        else:
+            asr_error = None
+
         label = _speech_speaker_label(speaker_id, speaker_name)
         line = _speech_line(label, text)
 
         entry: Optional[Dict[str, Any]] = None
         if body.add_to_logs:
+            if not has_voice and os.getenv("SPEECH_LOGS_INCLUDE_SILENCE", "0").strip().lower() in {"0", "false", "no"}:
+                return {
+                    "ok": True,
+                    "speaker_id": None,
+                    "speaker_name": None,
+                    "speaker_label": "Неизвестный",
+                    "confidence": 0.0,
+                    "text": "...",
+                    "line": "\"Неизвестный\"(текст): ...;",
+                    "asr_error": None,
+                    "entry": None,
+                    "skipped": True,
+                    "reason": "no_speech",
+                }
             async with _speech_logs_lock:
                 _speech_logs_counter += 1
                 entry = {
