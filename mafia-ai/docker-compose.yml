@@ -12,7 +12,12 @@ services:
       - COMPREFACE_ENABLED=1
       - COMPREFACE_URL=http://compreface-api:8000
       - COMPREFACE_API_KEY=${COMPREFACE_API_KEY:-}
-    command: bash -lc "pip install -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8000"
+    command: >
+      bash -lc "
+      awk '!/^insightface==/ && !/^pyaudio==/ && !/^pytest==/ && !/^pytest-asyncio==/ && !/^black==/ && !/^ruff==/' requirements.txt > /tmp/requirements.runtime.txt
+      && pip install -r /tmp/requirements.runtime.txt
+      && uvicorn app:app --host 0.0.0.0 --port 8000
+      "
     ports:
       - "8000:8000"
     depends_on:
