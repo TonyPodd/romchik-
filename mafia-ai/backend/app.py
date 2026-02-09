@@ -68,6 +68,14 @@ _compreface = get_compreface_client()
 _enroll: Optional[dict] = None
 _enroll_lock = asyncio.Lock()
 
+# speech logs state
+_speech_logs: List[Dict[str, Any]] = []
+_speech_logs_lock = asyncio.Lock()
+_speech_logs_counter: int = 0
+_speech_asr_model: Optional[Any] = None
+_speech_asr_init_error: Optional[str] = None
+_speech_asr_lock = asyncio.Lock()
+
 BOUNDARY = "frame"
 
 # --------------------------------------------------------------------------------------
@@ -202,6 +210,113 @@ def _players_add_safe(
             return P.add_player(embedding, thumb_rel, name)  # type: ignore[misc]
         except TypeError:
             return P.add_player(name=name, embedding=embedding, thumb=thumb_rel)  # type: ignore[call-arg]
+
+
+def _speech_speaker_label(speaker_id: Optional[int], speaker_name: Optional[str]) -> str:
+    """Build a short speaker label for log output."""
+    if speaker_id is not None:
+        return f"говорящий {speaker_id}"
+    if speaker_name and speaker_name.strip():
+        return speaker_name.strip()
+    return "говорящий ?"
+
+
+def _speech_line(label: str, text: str) -> str:
+    clean_text = (text or "").strip() or "..."
+    return f"\"{label}\"(текст): {clean_text};"
+
+
+async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
+    """Lazy-init ASR model for speech logs."""
+    global _speech_asr_model, _speech_asr_init_error
+    if _speech_asr_model is not None:
+        return _speech_asr_model, None
+    if _speech_asr_init_error is not None:
+        return None, _speech_asr_init_error
+
+    async with _speech_asr_lock:
+        if _speech_asr_model is not None:
+            return _speech_asr_model, None
+        if _speech_asr_init_error is not None:
+            return None, _speech_asr_init_error
+
+        try:
+            from infrastructure.audio.faster_whisper_asr import FasterWhisperASR
+
+            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "base"))
+            language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
+            device = os.getenv("SPEECH_LOG_ASR_DEVICE", "cpu")
+            compute_type = os.getenv("SPEECH_LOG_ASR_COMPUTE_TYPE", "int8")
+
+            _speech_asr_model = FasterWhisperASR(
+                model_size=model_size,
+                language=language,
+                device=device,
+                compute_type=compute_type,
+                num_workers=1,
+            )
+            return _speech_asr_model, None
+        except Exception as e:
+            _speech_asr_init_error = str(e)
+            return None, _speech_asr_init_error
+
+
+async def _transcribe_speech_audio(audio: np.ndarray, sample_rate: int) -> tuple[str, Optional[str]]:
+    """Transcribe speech audio. Returns (text, error)."""
+    asr_model, init_error = await _get_speech_asr_model()
+    if asr_model is None:
+        return "", init_error
+    try:
+        audio_for_asr = np.asarray(audio, dtype=np.float32).flatten()
+        if audio_for_asr.size == 0:
+            return "", None
+        audio_for_asr = np.nan_to_num(audio_for_asr, copy=False)
+        peak = float(np.max(np.abs(audio_for_asr)))
+        if peak > 1e-6:
+            audio_for_asr = audio_for_asr / peak
+
+        language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
+        transcription = await asr_model.transcribe_async(audio_for_asr, sample_rate=sample_rate, language=language)
+        return (transcription.text or "").strip(), None
+    except Exception as e:
+        return "", str(e)
+
+
+def _voice_best_guess(vs: Any, audio: np.ndarray, sample_rate: int) -> Optional[Tuple[int, str, float]]:
+    """
+    Soft fallback for speaker ID when strict voice activity / threshold checks reject a chunk.
+    Returns the best profile match if confidence is reasonable.
+    """
+    try:
+        profiles_map = getattr(vs, "profiles", None)
+        if not isinstance(profiles_map, dict) or not profiles_map:
+            return None
+
+        query = vs.extract_features(audio, sample_rate)  # type: ignore[attr-defined]
+        if not isinstance(query, np.ndarray) or query.size == 0:
+            return None
+        if float(np.linalg.norm(query)) <= 0:
+            return None
+
+        best_id: Optional[int] = None
+        best_name: Optional[str] = None
+        best_score = float("-inf")
+
+        for profile in profiles_map.values():
+            score = float(vs._profile_similarity(query, profile.embeddings))  # type: ignore[attr-defined]
+            if not np.isfinite(score):
+                continue
+            if score > best_score:
+                best_score = score
+                best_id = int(profile.player_id)
+                best_name = str(profile.player_name)
+
+        min_guess_score = float(os.getenv("VOICE_LOGS_MIN_GUESS_SCORE", "0.35"))
+        if best_id is None or best_name is None or best_score < min_guess_score:
+            return None
+        return best_id, best_name, best_score
+    except Exception:
+        return None
 
 # --------------------------------------------------------------------------------------
 # Health / Status
@@ -862,6 +977,13 @@ class _VoiceIdentifyIn(BaseModel):
     audio: List[float]  # Single audio sample
     sample_rate: int = 16000
 
+
+class _VoiceSpeechRecognizeIn(BaseModel):
+    audio: List[float]
+    sample_rate: int = 16000
+    add_to_logs: bool = True
+
+
 @app.post("/voice/identify")
 async def voice_identify(body: _VoiceIdentifyIn):
     """
@@ -899,6 +1021,93 @@ async def voice_identify(body: _VoiceIdentifyIn):
             return {"ok": True, "player_id": None, "player_name": None, "confidence": 0.0}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@app.post("/voice/logs/recognize")
+async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
+    """
+    Recognize speaker + speech text for one audio chunk and append it to speech logs.
+    """
+    global _speech_logs_counter
+    try:
+        audio_array = np.array(body.audio, dtype=np.float32)
+        if audio_array.size == 0:
+            return {"ok": False, "error": "empty_audio"}
+        audio_array = np.nan_to_num(audio_array, copy=False)
+
+        vs = get_voice_service()
+        speaker_id: Optional[int] = None
+        speaker_name: Optional[str] = None
+        confidence = 0.0
+
+        speaker = vs.identify_speaker(audio_array, sr=body.sample_rate)
+        if speaker:
+            speaker_id, speaker_name, confidence = speaker
+        else:
+            top_matches = vs.identify_top_k(audio_array, sr=body.sample_rate, k=1)
+            if top_matches:
+                top = top_matches[0]
+                speaker_id = int(top.get("player_id")) if top.get("player_id") is not None else None
+                speaker_name = str(top.get("player_name") or "").strip() or None
+                confidence = float(top.get("score") or 0.0)
+            else:
+                guess = _voice_best_guess(vs, audio_array, body.sample_rate)
+                if guess:
+                    speaker_id, speaker_name, confidence = guess
+
+        text, asr_error = await _transcribe_speech_audio(audio_array, body.sample_rate)
+        label = _speech_speaker_label(speaker_id, speaker_name)
+        line = _speech_line(label, text)
+
+        entry: Optional[Dict[str, Any]] = None
+        if body.add_to_logs:
+            async with _speech_logs_lock:
+                _speech_logs_counter += 1
+                entry = {
+                    "id": _speech_logs_counter,
+                    "timestamp": float(time.time()),
+                    "speaker_id": speaker_id,
+                    "speaker_name": speaker_name,
+                    "speaker_label": label,
+                    "confidence": float(confidence),
+                    "text": (text or "").strip() or "...",
+                    "line": line,
+                }
+                _speech_logs.append(entry)
+                max_logs = int(os.getenv("SPEECH_LOGS_MAX", "400"))
+                if max_logs > 0 and len(_speech_logs) > max_logs:
+                    del _speech_logs[:-max_logs]
+
+            await ws_broadcast({"type": "speech.log", "entry": entry})
+
+        return {
+            "ok": True,
+            "speaker_id": speaker_id,
+            "speaker_name": speaker_name,
+            "speaker_label": label,
+            "confidence": float(confidence),
+            "text": (text or "").strip() or "...",
+            "line": line,
+            "asr_error": asr_error,
+            "entry": entry,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/voice/logs")
+async def voice_logs(limit: int = 200):
+    n = max(1, min(int(limit), 1000))
+    async with _speech_logs_lock:
+        logs = list(_speech_logs[-n:])
+    return {"ok": True, "logs": logs}
+
+
+@app.post("/voice/logs/clear")
+async def voice_logs_clear():
+    async with _speech_logs_lock:
+        _speech_logs.clear()
+    return {"ok": True}
 
 
 class _VoiceTestIdentifyIn(BaseModel):

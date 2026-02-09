@@ -1,8 +1,12 @@
-const API_HOST =
+const CURRENT_HOST =
   typeof window !== 'undefined' && window.location.hostname
     ? window.location.hostname
-    : '127.0.0.1';
-const API_BASE = `http://${API_HOST}:8000`;
+    : '';
+
+const LOCAL_HOSTS = new Set(['', 'localhost', '127.0.0.1', '0.0.0.0']);
+const isLocalDevHost = LOCAL_HOSTS.has(CURRENT_HOST);
+const envApiBase = (import.meta.env.VITE_API_BASE || '').trim();
+const API_BASE = envApiBase || (isLocalDevHost ? '/api' : `http://${CURRENT_HOST}:8000`);
 const FETCH_TIMEOUT = 10000; // 10 seconds
 
 // Helper function with timeout
@@ -315,6 +319,63 @@ export async function voiceDeleteProfile(playerId: number): Promise<{ ok: boolea
 
 export async function voiceClearProfiles(): Promise<{ ok: boolean; error?: string }> {
   const res = await fetchWithTimeout(`${API_BASE}/voice/clear`, {
+    method: 'POST',
+  });
+  return res.json();
+}
+
+export interface SpeechLogEntry {
+  id: number;
+  timestamp: number;
+  speaker_id?: number | null;
+  speaker_name?: string | null;
+  speaker_label: string;
+  confidence: number;
+  text: string;
+  line: string;
+}
+
+export interface SpeechRecognizeResponse {
+  ok: boolean;
+  speaker_id?: number | null;
+  speaker_name?: string | null;
+  speaker_label?: string;
+  confidence?: number;
+  text?: string;
+  line?: string;
+  asr_error?: string | null;
+  entry?: SpeechLogEntry | null;
+  error?: string;
+}
+
+export async function speechRecognizeChunk(
+  audio: number[],
+  sampleRate: number = 16000,
+  addToLogs: boolean = true,
+): Promise<SpeechRecognizeResponse> {
+  const res = await fetchWithTimeout(
+    `${API_BASE}/voice/logs/recognize`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        audio,
+        sample_rate: sampleRate,
+        add_to_logs: addToLogs,
+      }),
+    },
+    30000,
+  );
+  return res.json();
+}
+
+export async function speechLogsList(limit: number = 200): Promise<{ ok: boolean; logs: SpeechLogEntry[]; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/voice/logs?limit=${encodeURIComponent(String(limit))}`);
+  return res.json();
+}
+
+export async function speechLogsClear(): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/voice/logs/clear`, {
     method: 'POST',
   });
   return res.json();

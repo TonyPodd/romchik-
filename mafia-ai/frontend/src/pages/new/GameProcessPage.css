@@ -1,0 +1,187 @@
+.process-page__header {
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.process-page__hero {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.process-page__heading {
+  margin: 0;
+  font-size: clamp(1.3rem, 2.8vw, 1.9rem);
+  letter-spacing: 0.01em;
+}
+
+.process-page__subtitle {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.9rem;
+}
+
+.process-page__status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.process-page__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(300px, 1fr);
+  gap: 0.95rem;
+}
+
+.process-page__camera-card,
+.process-page__people-card {
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+  min-height: 0;
+}
+
+.process-page__card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.process-page__title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.process-page__muted {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.process-page__camera-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 16px;
+  border: 1px solid rgba(179, 191, 183, 0.28);
+  overflow: hidden;
+  background: linear-gradient(150deg, rgba(14, 18, 23, 0.8), rgba(19, 25, 30, 0.8));
+}
+
+.process-page__camera-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.process-page__empty,
+.process-page__empty-small {
+  color: var(--text-soft);
+  font-size: 0.86rem;
+  border: 1px dashed rgba(179, 191, 183, 0.3);
+  border-radius: 12px;
+  padding: 0.7rem;
+  text-align: center;
+}
+
+.process-page__empty {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.process-page__active-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.process-page__chip {
+  border: 1px solid rgba(126, 245, 182, 0.34);
+  background: rgba(47, 217, 136, 0.11);
+  color: #dcffec;
+  border-radius: 12px;
+  padding: 0.45rem 0.6rem;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.process-page__chip strong {
+  font-size: 0.84rem;
+}
+
+.process-page__chip span {
+  color: var(--text-soft);
+  font-size: 0.72rem;
+}
+
+.process-page__roster {
+  display: grid;
+  gap: 0.48rem;
+  max-height: 350px;
+  overflow: auto;
+}
+
+.process-page__roster-item {
+  border: 1px solid rgba(179, 191, 183, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.48rem 0.56rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.process-page__roster-item.is-active {
+  border-color: rgba(126, 245, 182, 0.42);
+  background: rgba(47, 217, 136, 0.08);
+}
+
+.process-page__roster-meta {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+.process-page__roster-meta strong,
+.process-page__roster-meta span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.process-page__roster-meta strong {
+  font-size: 0.86rem;
+}
+
+.process-page__roster-meta span {
+  font-size: 0.74rem;
+  color: var(--text-soft);
+}
+
+.process-page__error {
+  border: 1px solid rgba(240, 129, 150, 0.52);
+  border-radius: 12px;
+  background: rgba(240, 129, 150, 0.14);
+  color: #ffdbe4;
+  font-size: 0.84rem;
+  padding: 0.65rem 0.78rem;
+}
+
+@media (max-width: 1020px) {
+  .process-page__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .process-page__header,
+  .process-page__camera-card,
+  .process-page__people-card {
+    padding: 0.84rem;
+  }
+}

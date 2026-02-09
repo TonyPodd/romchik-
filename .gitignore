@@ -1,5 +1,6 @@
 # python/venv
 .venv/
+.venv311/
 __pycache__/
 
 # frontend
