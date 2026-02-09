@@ -18,9 +18,31 @@ type KnownPlayer = {
 
 type WsStatus = 'connecting' | 'open' | 'closed' | 'error';
 
+type GestureWsHand = {
+  track_id?: number;
+  owner_id?: number | null;
+  label?: string;
+  gesture?: string;
+  handedness?: string;
+  fingers?: number;
+  count?: number;
+  center?: [number, number];
+};
+
 type GestureWsPayload = {
   type?: string;
-  faces?: Array<{ id?: number | null }>;
+  faces?: Array<{ id?: number | null; name?: string | null }>;
+  hands?: GestureWsHand[];
+};
+
+type ActiveGesture = {
+  key: string;
+  ownerId: number | null;
+  ownerName: string;
+  label: string;
+  handedness: string;
+  fingers: number;
+  centerX: number;
 };
 
 function normalizePlayers(incoming: IncomingPlayer[] | undefined, fallbackCount: number): KnownPlayer[] {
@@ -67,6 +89,27 @@ function wsStatusClass(status: WsStatus): string {
   return 'status-tag--danger';
 }
 
+function displayGestureLabel(raw: string): string {
+  const value = raw.trim().toLowerCase();
+  if (!value) {
+    return 'неизвестно';
+  }
+
+  const map: Record<string, string> = {
+    thumb_up: 'мирный',
+    like: 'мирный',
+    thumb_down: 'мафия',
+    dislike: 'мафия',
+    ok: 'OK',
+    ok_sign: 'OK',
+    jambo: 'Если',
+    call_me: 'Если',
+    call: 'Если',
+  };
+
+  return map[value] || raw;
+}
+
 export function GameProcessPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -81,10 +124,12 @@ export function GameProcessPage() {
   const [streamUrl, setStreamUrl] = useState('');
   const [wsStatus, setWsStatus] = useState<WsStatus>('connecting');
   const [activePlayerIds, setActivePlayerIds] = useState<number[]>([]);
+  const [activeGestures, setActiveGestures] = useState<ActiveGesture[]>([]);
   const [unknownFaces, setUnknownFaces] = useState(0);
   const [error, setError] = useState('');
 
   const wsRef = useRef<WebSocket | null>(null);
+  const playerNameByIdRef = useRef<Map<number, string>>(new Map());
 
   const activeIdSet = useMemo(() => new Set(activePlayerIds), [activePlayerIds]);
 
@@ -95,6 +140,10 @@ export function GameProcessPage() {
       name: byId.get(id) || `Игрок ${id}`,
     }));
   }, [activePlayerIds, players]);
+
+  useEffect(() => {
+    playerNameByIdRef.current = new Map(players.map((player) => [player.id, player.name]));
+  }, [players]);
 
   async function reloadPlayers() {
     try {
@@ -114,6 +163,7 @@ export function GameProcessPage() {
   async function restartVideo() {
     setError('');
     setActivePlayerIds([]);
+    setActiveGestures([]);
     setUnknownFaces(0);
 
     try {
@@ -125,7 +175,7 @@ export function GameProcessPage() {
 
       setVideoRunning(true);
       setStreamUrl(`${api.getVideoStreamUrl()}?t=${Date.now()}`);
-      await api.setVideoGestures(false).catch(() => undefined);
+      await api.setVideoGestures(true).catch(() => undefined);
     } catch (restartError: any) {
       setVideoRunning(false);
       setError(restartError?.message || 'Не удалось запустить видеопоток');
@@ -171,14 +221,15 @@ export function GameProcessPage() {
             return;
           }
 
-          if (payload.type !== 'gesture' || !Array.isArray(payload.faces)) {
+          if (payload.type !== 'gesture') {
             return;
           }
 
+          const faces = Array.isArray(payload.faces) ? payload.faces : [];
           const ids = new Set<number>();
           let unknown = 0;
 
-          payload.faces.forEach((face) => {
+          faces.forEach((face) => {
             if (typeof face.id === 'number' && Number.isFinite(face.id)) {
               ids.add(face.id);
               return;
@@ -188,6 +239,38 @@ export function GameProcessPage() {
 
           setActivePlayerIds(Array.from(ids).sort((a, b) => a - b));
           setUnknownFaces(unknown);
+
+          const hands = Array.isArray(payload.hands) ? payload.hands : [];
+          const parsedHands = hands
+            .map((hand, index): ActiveGesture => {
+              const ownerId = typeof hand.owner_id === 'number' && Number.isFinite(hand.owner_id) ? hand.owner_id : null;
+              const ownerName = ownerId
+                ? playerNameByIdRef.current.get(ownerId) || `Игрок ${ownerId}`
+                : 'не привязан';
+              const rawLabel = (hand.gesture || hand.label || '').toString().trim();
+              const label = displayGestureLabel(rawLabel);
+              const handednessRaw = (hand.handedness || '').toString().trim().toLowerCase();
+              const handedness = handednessRaw === 'left' ? 'левая' : handednessRaw === 'right' ? 'правая' : 'рука';
+              const fingers = Number.isFinite(Number(hand.fingers))
+                ? Number(hand.fingers)
+                : Number.isFinite(Number(hand.count))
+                  ? Number(hand.count)
+                  : 0;
+              const centerX = Array.isArray(hand.center) ? Number(hand.center[0] || 0) : index * 10;
+              const trackId = typeof hand.track_id === 'number' ? hand.track_id : index;
+              return {
+                key: `${trackId}:${ownerId ?? 'u'}:${label}:${handedness}:${index}`,
+                ownerId,
+                ownerName,
+                label,
+                handedness,
+                fingers,
+                centerX,
+              };
+            })
+            .sort((a, b) => a.centerX - b.centerX);
+
+          setActiveGestures(parsedHands);
         };
       } catch (wsError) {
         console.error('WS init failed:', wsError);
@@ -210,7 +293,7 @@ export function GameProcessPage() {
 
         setVideoRunning(true);
         setStreamUrl(`${api.getVideoStreamUrl()}?t=${Date.now()}`);
-        await api.setVideoGestures(false).catch(() => undefined);
+        await api.setVideoGestures(true).catch(() => undefined);
       } catch (startError: any) {
         if (!disposed) {
           setVideoRunning(false);
@@ -255,6 +338,7 @@ export function GameProcessPage() {
               <span className={`status-tag ${wsStatusClass(wsStatus)}`}>
                 WS: {wsStatusText(wsStatus)}
               </span>
+              <span className="status-tag status-tag--warn">Жестов: {activeGestures.length}</span>
               {unknownFaces > 0 && (
                 <span className="status-tag status-tag--warn">Неизвестных лиц: {unknownFaces}</span>
               )}
@@ -292,6 +376,30 @@ export function GameProcessPage() {
                   ))
                 ) : (
                   <div className="process-page__empty-small">Сейчас никого не распознано</div>
+                )}
+              </div>
+
+              <div className="process-page__card-head">
+                <h3 className="process-page__title">Жесты в кадре</h3>
+                <span className="process-page__muted">{activeGestures.length}</span>
+              </div>
+
+              <div className="process-page__gestures">
+                {activeGestures.length > 0 ? (
+                  activeGestures.map((gesture) => (
+                    <div key={gesture.key} className="process-page__gesture-item">
+                      <div className="process-page__gesture-main">
+                        <strong>{gesture.label}</strong>
+                        <span>{gesture.handedness}</span>
+                      </div>
+                      <div className="process-page__gesture-meta">
+                        <span>{gesture.ownerName}</span>
+                        <span>пальцев: {gesture.fingers}</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="process-page__empty-small">Жесты пока не обнаружены</div>
                 )}
               </div>
 

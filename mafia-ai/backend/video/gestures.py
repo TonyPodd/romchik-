@@ -1,7 +1,10 @@
 # backend/video/gestures.py
 from __future__ import annotations
+
+import time
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
 
@@ -14,25 +17,36 @@ except ImportError as e:
 @dataclass
 class HandInfo:
     bbox: Tuple[int, int, int, int]  # x, y, w, h
-    handedness: str                   # 'Left' or 'Right'
-    extended: Dict[str, bool]         # thumb, index, middle, ring, pinky
-    count: int                        # number of extended fingers
-    center: Tuple[int, int]           # cx, cy (pixels)
+    handedness: str                  # "Left" / "Right"
+    extended: Dict[str, bool]        # thumb/index/middle/ring/pinky
+    count: int                       # number of extended fingers
+    center: Tuple[int, int]          # cx, cy (pixels)
+    track_id: int                    # lightweight hand track id
+    gesture: str                     # canonical label: 1..5, thumb_up, thumb_down, ok, jambo, shot, ...
 
 
 @dataclass
 class GestureResult:
-    # High-level classification per frame
-    digit: Optional[int]              # 0..10 if confidently inferred
-    fist_on_table: bool               # closed fist near bottom of frame (table area)
-    pistol: bool                      # thumb+index extended, others folded
-    hands: List[HandInfo]             # raw per-hand info for debugging
+    digit: Optional[int]
+    fist_on_table: bool
+    pistol: bool
+    hands: List[HandInfo]
+
+
+@dataclass
+class _HandTrackState:
+    track_id: int
+    handedness: str
+    center: Tuple[int, int]
+    last_seen: float
+    two_up_ts: float = 0.0
+    shot_until_ts: float = 0.0
 
 
 class GestureDetector:
     def __init__(
         self,
-        table_y_ratio: float = 0.80,              # нижняя часть кадра считается столом (80% высоты и ниже)
+        table_y_ratio: float = 0.80,
         min_detection_confidence: float = 0.6,
         min_tracking_confidence: float = 0.5,
         max_num_hands: int = 10,
@@ -46,32 +60,44 @@ class GestureDetector:
             min_tracking_confidence=min_tracking_confidence,
             model_complexity=1,
         )
+        self._tracks: Dict[int, _HandTrackState] = {}
+        self._next_track_id = 1
+        self._track_ttl_sec = 1.2
+        self._shot_window_sec = 0.9
+        self._shot_hold_sec = 0.45
 
-    def _norm_to_px(self, lm, w, h):
+    @staticmethod
+    def _norm_to_px(lm, w: int, h: int) -> Tuple[int, int]:
         return int(lm.x * w), int(lm.y * h)
 
-    def _bbox_from_landmarks(self, landmarks_px: List[Tuple[int,int]]) -> Tuple[int,int,int,int]:
+    @staticmethod
+    def _bbox_from_landmarks(landmarks_px: List[Tuple[int, int]]) -> Tuple[int, int, int, int]:
         xs = [p[0] for p in landmarks_px]
         ys = [p[1] for p in landmarks_px]
         x1, x2 = min(xs), max(xs)
         y1, y2 = min(ys), max(ys)
         return x1, y1, x2 - x1, y2 - y1
 
-    def _finger_extended(self, lm_px, finger: str) -> bool:
-        """
-        Простые эвристики в пикселях:
-        - Для указ., ср., безым., мизинца: кончик выше (меньше y) одного-двух суставов
-        - Для большого: сравнение по x в зависимости от ладонности плюс угол между фалангами
-        """
-        # lm indices (MediaPipe Hands):
-        # 0:wrist,
-        # thumb: 1,2,3,4
-        # index: 5,6,7,8
-        # middle: 9,10,11,12
-        # ring: 13,14,15,16
-        # pinky: 17,18,19,20
-        def up(i_tip, i_pip):  # "tip above pip" in image coordinates (smaller y)
-            return lm_px[i_tip][1] < lm_px[i_pip][1] - 4  # небольшой зазор
+    @staticmethod
+    def _dist(a: Tuple[int, int], b: Tuple[int, int]) -> float:
+        return float(np.hypot(float(a[0] - b[0]), float(a[1] - b[1])))
+
+    @staticmethod
+    def _angle(a: Tuple[int, int], b: Tuple[int, int], c: Tuple[int, int]) -> float:
+        ba = np.array([float(a[0] - b[0]), float(a[1] - b[1])], dtype=np.float32)
+        bc = np.array([float(c[0] - b[0]), float(c[1] - b[1])], dtype=np.float32)
+        na = float(np.linalg.norm(ba))
+        nb = float(np.linalg.norm(bc))
+        if na < 1e-6 or nb < 1e-6:
+            return 0.0
+        cosang = float(np.clip(float(np.dot(ba, bc) / (na * nb)), -1.0, 1.0))
+        return float(np.degrees(np.arccos(cosang)))
+
+    def _finger_extended(self, lm_px: List[Tuple[int, int]], finger: str) -> bool:
+        # MediaPipe landmark indices:
+        # 0:wrist; thumb:1,2,3,4; index:5,6,7,8; middle:9,10,11,12; ring:13..16; pinky:17..20
+        def up(i_tip: int, i_pip: int) -> bool:
+            return lm_px[i_tip][1] < (lm_px[i_pip][1] - 4)
 
         if finger == "index":
             return up(8, 6)
@@ -82,76 +108,223 @@ class GestureDetector:
         if finger == "pinky":
             return up(20, 18)
         if finger == "thumb":
-            # thumb: сравним направление фаланги (2->4) и «раскрытие» относительно запястья
-            # простая эвристика: расстояние tip (4) до запястья (0) должно быть больше, чем 3 до запястья
+            # More conservative thumb check to avoid +1 finger bias.
             wrist = lm_px[0]
-            d_tip = np.hypot(lm_px[4][0]-wrist[0], lm_px[4][1]-wrist[1])
-            d_3   = np.hypot(lm_px[3][0]-wrist[0], lm_px[3][1]-wrist[1])
-            return d_tip > d_3 + 6
+            thumb_mcp = lm_px[2]
+            thumb_ip = lm_px[3]
+            thumb_tip = lm_px[4]
+            index_mcp = lm_px[5]
+            middle_mcp = lm_px[9]
+
+            palm = max(12.0, self._dist(wrist, middle_mcp))
+            d_tip_wrist = self._dist(wrist, thumb_tip)
+            d_ip_wrist = self._dist(wrist, thumb_ip)
+            d_tip_index = self._dist(thumb_tip, index_mcp)
+            ang = self._angle(thumb_mcp, thumb_ip, thumb_tip)
+
+            straight = ang >= 140.0
+            radial = d_tip_wrist > (d_ip_wrist + 0.10 * palm)
+            away_from_index = d_tip_index > (0.34 * palm)
+            return bool(straight and radial and away_from_index)
         return False
 
-    def _pistol(self, ext: Dict[str,bool]) -> bool:
-        # «пистолет»: большой и указательный — да; остальные — нет
-        return ext["thumb"] and ext["index"] and not (ext["middle"] or ext["ring"] or ext["pinky"])
+    @staticmethod
+    def _pistol(ext: Dict[str, bool]) -> bool:
+        return bool(ext["thumb"] and ext["index"] and not (ext["middle"] or ext["ring"] or ext["pinky"]))
 
-    def _closed_fist(self, ext: Dict[str,bool]) -> bool:
+    @staticmethod
+    def _closed_fist(ext: Dict[str, bool]) -> bool:
         return not (ext["thumb"] or ext["index"] or ext["middle"] or ext["ring"] or ext["pinky"])
 
+    def _assign_track(
+        self,
+        center: Tuple[int, int],
+        handedness: str,
+        bbox: Tuple[int, int, int, int],
+        now: float,
+        used_track_ids: set[int],
+    ) -> _HandTrackState:
+        bw = max(1.0, float(bbox[2]))
+        bh = max(1.0, float(bbox[3]))
+        gate = max(90.0, 1.4 * max(bw, bh))
+        gate2 = gate * gate
+
+        best_id: Optional[int] = None
+        best_d2 = float("inf")
+
+        for tid, track in self._tracks.items():
+            if tid in used_track_ids:
+                continue
+            if track.handedness != handedness:
+                continue
+            dx = float(center[0] - track.center[0])
+            dy = float(center[1] - track.center[1])
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2 and d2 <= gate2:
+                best_d2 = d2
+                best_id = tid
+
+        if best_id is None:
+            best_id = self._next_track_id
+            self._next_track_id += 1
+            track = _HandTrackState(
+                track_id=best_id,
+                handedness=handedness,
+                center=center,
+                last_seen=now,
+            )
+            self._tracks[best_id] = track
+            return track
+
+        track = self._tracks[best_id]
+        track.center = center
+        track.last_seen = now
+        return track
+
+    def _cleanup_tracks(self, now: float) -> None:
+        dead = [tid for tid, tr in self._tracks.items() if (now - tr.last_seen) > self._track_ttl_sec]
+        for tid in dead:
+            self._tracks.pop(tid, None)
+
+    def _is_thumb_up(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
+        if not ext["thumb"]:
+            return False
+        if ext["index"] or ext["middle"] or ext["ring"] or ext["pinky"]:
+            return False
+        palm = max(12.0, self._dist(lm_px[0], lm_px[9]))
+        tip = lm_px[4]
+        wrist = lm_px[0]
+        vertical = abs(float(tip[1] - wrist[1]))
+        horizontal = abs(float(tip[0] - wrist[0]))
+        if vertical < (horizontal * 0.7):
+            return False
+        return bool(tip[1] < (wrist[1] - 0.28 * palm))
+
+    def _is_thumb_down(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
+        if not ext["thumb"]:
+            return False
+        if ext["index"] or ext["middle"] or ext["ring"] or ext["pinky"]:
+            return False
+        palm = max(12.0, self._dist(lm_px[0], lm_px[9]))
+        tip = lm_px[4]
+        wrist = lm_px[0]
+        vertical = abs(float(tip[1] - wrist[1]))
+        horizontal = abs(float(tip[0] - wrist[0]))
+        if vertical < (horizontal * 0.7):
+            return False
+        return bool(tip[1] > (wrist[1] + 0.28 * palm))
+
+    def _is_ok_sign(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
+        palm = max(12.0, self._dist(lm_px[0], lm_px[9]))
+        thumb_index_tip = self._dist(lm_px[4], lm_px[8])
+        close_enough = thumb_index_tip < (0.34 * palm)
+        support_fingers = ext["middle"] or ext["ring"] or ext["pinky"]
+        return bool(close_enough and support_fingers)
+
+    @staticmethod
+    def _is_jambo(ext: Dict[str, bool]) -> bool:
+        return bool(ext["thumb"] and ext["pinky"] and not (ext["index"] or ext["middle"] or ext["ring"]))
+
+    @staticmethod
+    def _is_two_up_pose(ext: Dict[str, bool]) -> bool:
+        return bool(ext["index"] and ext["middle"] and not ext["ring"] and not ext["pinky"])
+
+    @staticmethod
+    def _is_two_folded(ext: Dict[str, bool]) -> bool:
+        return bool((not ext["index"]) and (not ext["middle"]))
+
+    def _classify_hand(
+        self,
+        ext: Dict[str, bool],
+        count: int,
+        lm_px: List[Tuple[int, int]],
+        track: _HandTrackState,
+        now: float,
+    ) -> str:
+        two_up = self._is_two_up_pose(ext)
+        if two_up:
+            track.two_up_ts = now
+
+        if self._is_two_folded(ext) and track.two_up_ts > 0.0 and (now - track.two_up_ts) <= self._shot_window_sec:
+            track.shot_until_ts = now + self._shot_hold_sec
+            track.two_up_ts = 0.0
+
+        if track.shot_until_ts > now:
+            return "shot"
+
+        if self._is_ok_sign(ext, lm_px):
+            return "ok"
+        if self._is_thumb_up(ext, lm_px):
+            return "thumb_up"
+        if self._is_thumb_down(ext, lm_px):
+            return "thumb_down"
+        if self._is_jambo(ext):
+            return "jambo"
+
+        if 1 <= count <= 5:
+            return str(count)
+        if count <= 0:
+            return "fist"
+        return "unknown"
+
     def process_frame(self, frame_bgr: np.ndarray) -> GestureResult:
-        """
-        Возвращает агрегированную оценку кадра и подробности по каждой руке.
-        """
         h, w = frame_bgr.shape[:2]
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         res = self.hands.process(frame_rgb)
 
+        now = time.time()
+        used_track_ids: set[int] = set()
         hands_out: List[HandInfo] = []
+
         if res.multi_hand_landmarks and res.multi_handedness:
             for lms, handedness in zip(res.multi_hand_landmarks, res.multi_handedness):
                 lm_px = [self._norm_to_px(lm, w, h) for lm in lms.landmark]
                 bbox = self._bbox_from_landmarks(lm_px)
                 cx = int(np.mean([p[0] for p in lm_px]))
                 cy = int(np.mean([p[1] for p in lm_px]))
-                label = handedness.classification[0].label  # 'Left' / 'Right'
+                label = handedness.classification[0].label  # "Left" / "Right"
 
                 ext = {
-                    "thumb":  self._finger_extended(lm_px, "thumb"),
-                    "index":  self._finger_extended(lm_px, "index"),
+                    "thumb": self._finger_extended(lm_px, "thumb"),
+                    "index": self._finger_extended(lm_px, "index"),
                     "middle": self._finger_extended(lm_px, "middle"),
-                    "ring":   self._finger_extended(lm_px, "ring"),
-                    "pinky":  self._finger_extended(lm_px, "pinky"),
+                    "ring": self._finger_extended(lm_px, "ring"),
+                    "pinky": self._finger_extended(lm_px, "pinky"),
                 }
-                count = sum(ext.values())
+                count = int(sum(1 for v in ext.values() if bool(v)))
 
-                hands_out.append(HandInfo(bbox=bbox, handedness=label, extended=ext, count=count, center=(cx, cy)))
+                track = self._assign_track((cx, cy), label, bbox, now, used_track_ids)
+                used_track_ids.add(track.track_id)
+                gesture = self._classify_hand(ext, count, lm_px, track, now)
 
-        # Аггрегации на уровне кадра
-        total_fingers = sum(h.count for h in hands_out)
+                hands_out.append(
+                    HandInfo(
+                        bbox=bbox,
+                        handedness=label,
+                        extended=ext,
+                        count=count,
+                        center=(cx, cy),
+                        track_id=track.track_id,
+                        gesture=gesture,
+                    )
+                )
+
+        self._cleanup_tracks(now)
+
+        total_fingers = sum(hh.count for hh in hands_out)
         digit: Optional[int] = None
-        pistol = any(self._pistol(h.extended) for h in hands_out)
+        pistol = any(self._pistol(hh.extended) for hh in hands_out)
 
-        # цифры: 1–5 одной рукой, 6–10 — сумма двух рук
         if len(hands_out) == 0:
             digit = None
         elif len(hands_out) == 1:
-            # стабилизируем в диапазоне 0..5
             c = max(0, min(5, hands_out[0].count))
-            digit = c if c > 0 else 0  # 0 трактуем как «ничего не показывает»
+            digit = c if c > 0 else 0
         else:
-            # две руки: сумма 0..10
             s = max(0, min(10, total_fingers))
             digit = s if s > 0 else 0
 
-        # кулак «на столе»: закрыт и в нижней части кадра
         table_y = int(self.table_y_ratio * h)
-        fist_on_table = any(
-            (self._closed_fist(hh.extended) and hh.center[1] >= table_y)
-            for hh in hands_out
-        )
+        fist_on_table = any(self._closed_fist(hh.extended) and hh.center[1] >= table_y for hh in hands_out)
 
-        return GestureResult(
-            digit=digit,
-            fist_on_table=fist_on_table,
-            pistol=pistol,
-            hands=hands_out
-        )
+        return GestureResult(digit=digit, fist_on_table=fist_on_table, pistol=pistol, hands=hands_out)

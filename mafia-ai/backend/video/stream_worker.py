@@ -970,12 +970,20 @@ class GestureStream:
                         face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
 
                         def _label_for_hand(h) -> Tuple[str, int]:
-                            if hasattr(h, "extended") and h.extended is not None:
-                                cnt = int(sum(1 for v in h.extended if v))
+                            ext = getattr(h, "extended", None)
+                            if isinstance(ext, dict):
+                                cnt = int(sum(1 for v in ext.values() if bool(v)))
+                            elif isinstance(ext, (list, tuple)):
+                                cnt = int(sum(1 for v in ext if bool(v)))
                             else:
                                 cnt = _safe_int(getattr(h, "count", None), default=0)
-                            name = {0: "fist", 1: "one", 2: "two", 3: "three", 4: "four", 5: "open"}.get(cnt, f"{cnt}-fingers")
-                            return name, cnt
+
+                            gesture = str(getattr(h, "gesture", "") or "").strip().lower()
+                            if gesture:
+                                return gesture, cnt
+
+                            fallback = {0: "fist", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5"}.get(cnt, "unknown")
+                            return fallback, cnt
 
                         for hnd in res.hands:
                             owner = None
@@ -990,10 +998,48 @@ class GestureStream:
                                 "center": hnd.center,
                                 "count": _safe_int(getattr(hnd, "count", None), default=0),
                                 "extended": hnd.extended,
+                                "handedness": getattr(hnd, "handedness", ""),
+                                "track_id": getattr(hnd, "track_id", None),
                                 "owner_id": owner,
                                 "label": label,
+                                "gesture": label,
                                 "fingers": fingers,
                             })
+
+                        # If two hands belong to the same recognized person and both are numeric
+                        # gestures, show the same total on both hands (e.g., 4 + 3 => "7" on each).
+                        hands_by_owner: Dict[int, List[int]] = {}
+                        for idx, hand in enumerate(hands_out):
+                            owner_id = hand.get("owner_id")
+                            if isinstance(owner_id, int) and owner_id > 0:
+                                hands_by_owner.setdefault(owner_id, []).append(idx)
+
+                        for owner_id, idxs in hands_by_owner.items():
+                            if len(idxs) != 2:
+                                continue
+                            vals: List[int] = []
+                            valid_pair = True
+                            for idx in idxs:
+                                raw_gesture = str(hands_out[idx].get("gesture", "")).strip()
+                                if raw_gesture.isdigit():
+                                    v = int(raw_gesture)
+                                else:
+                                    valid_pair = False
+                                    break
+                                if v < 0 or v > 5:
+                                    valid_pair = False
+                                    break
+                                vals.append(v)
+                            if not valid_pair:
+                                continue
+
+                            total = int(sum(vals))
+                            total_label = str(total)
+                            for idx in idxs:
+                                hands_out[idx]["label"] = total_label
+                                hands_out[idx]["gesture"] = total_label
+                                hands_out[idx]["fingers_total"] = total
+                                hands_out[idx]["fingers_total_owner_id"] = owner_id
 
                     now = time.time()
                     if now - last_evt >= 0.2:
