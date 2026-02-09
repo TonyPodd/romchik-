@@ -78,6 +78,13 @@ _speech_asr_lock = asyncio.Lock()
 _player_name_cache: Dict[int, str] = {}
 _player_name_cache_mtime: float = -1.0
 
+# gesture transcription state
+_gesture_phrase_state: Dict[int, Dict[str, Any]] = {}
+_gesture_phrase_lock = asyncio.Lock()
+_gesture_phrase_hold_sec = 0.52
+_gesture_phrase_idle_emit_sec = 1.15
+_gesture_phrase_state_ttl_sec = 20.0
+
 BOUNDARY = "frame"
 
 # --------------------------------------------------------------------------------------
@@ -340,9 +347,281 @@ def _speech_speaker_label(speaker_id: Optional[int], speaker_name: Optional[str]
     return "Неизвестный"
 
 
-def _speech_line(label: str, text: str) -> str:
+def _speech_line(label: str, text: str, kind: str = "speech_text") -> str:
     clean_text = (text or "").strip() or "..."
+    if str(kind).strip().lower() == "gesture_transcript":
+        return f"\"{label}\"(транскрипция): {clean_text};"
     return f"\"{label}\"(текст): {clean_text};"
+
+
+def _normalize_gesture_token(raw: Any) -> Optional[str]:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return None
+
+    if value.isdigit():
+        num = int(value)
+        if 1 <= num <= 10:
+            return str(num)
+        return None
+
+    aliases = {
+        "one": "1",
+        "two": "2",
+        "three": "3",
+        "four": "4",
+        "five": "5",
+        "ok": "ok",
+        "ok_sign": "ok",
+        "shot": "shot",
+        "pistol": "shot",
+        "fist": "fist",
+        "jambo": "if",
+        "если": "if",
+        "if": "if",
+        "call_me": "if",
+        "call": "if",
+        "мафии": "mafia",
+        "thumb_down": "mafia",
+        "мафия": "mafia",
+        "mafia": "mafia",
+        "мирные": "civil",
+        "thumb_up": "civil",
+        "мирный": "civil",
+        "civil": "civil",
+        "peaceful": "civil",
+    }
+    return aliases.get(value)
+
+
+def _gesture_token_priority(token: str) -> int:
+    if token in {"if", "mafia", "civil"}:
+        return 4
+    if token.isdigit():
+        return 3
+    if token in {"ok", "shot", "fist"}:
+        return 2
+    return 1
+
+
+def _format_ordinal_list(nums: List[int]) -> str:
+    uniq: List[int] = []
+    for n in nums:
+        if n not in uniq:
+            uniq.append(n)
+    labels = [f"{n}-й" for n in uniq]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} и {labels[1]}"
+    return f"{', '.join(labels[:-1])} и {labels[-1]}"
+
+
+def _role_word(role: str, count: int) -> str:
+    if role == "mafia":
+        return "мафия" if count == 1 else "мафии"
+    if role == "civil":
+        return "мирный" if count == 1 else "мирные"
+    return role
+
+
+def _gesture_token_to_text(token: str) -> str:
+    if token == "if":
+        return "если"
+    if token == "mafia":
+        return "мафия"
+    if token == "civil":
+        return "мирный"
+    if token == "ok":
+        return "OK"
+    if token == "shot":
+        return "выстрел"
+    if token == "fist":
+        return "кулак"
+    return token
+
+
+def _build_gesture_transcription(tokens: List[str]) -> Optional[str]:
+    clean = [str(t).strip().lower() for t in tokens if str(t).strip()]
+    if not clean:
+        return None
+
+    # Preferred grammar: [if] <num...> <mafia|civil> [<num...> <mafia|civil> ...]
+    i = 1 if clean and clean[0] == "if" else 0
+    with_if = i == 1
+    grammar_ok = True
+    groups: List[Tuple[List[int], str]] = []
+    while i < len(clean):
+        nums: List[int] = []
+        while i < len(clean) and clean[i].isdigit():
+            n = int(clean[i])
+            if 1 <= n <= 10:
+                nums.append(n)
+                i += 1
+            else:
+                grammar_ok = False
+                break
+        if not nums or i >= len(clean):
+            grammar_ok = False
+            break
+        role = clean[i]
+        if role not in {"mafia", "civil"}:
+            grammar_ok = False
+            break
+        i += 1
+        groups.append((nums, role))
+
+    if grammar_ok and groups and i == len(clean):
+        parts: List[str] = ["если"] if with_if else []
+        for nums, role in groups:
+            formatted_nums = _format_ordinal_list(nums)
+            if not formatted_nums:
+                grammar_ok = False
+                break
+            parts.append(f"{formatted_nums} {_role_word(role, len(nums))}")
+        if grammar_ok:
+            phrase = " ".join(parts).strip()
+            if phrase:
+                return phrase
+
+    # Fallback: any valid sequence is a transcript.
+    words = [_gesture_token_to_text(t) for t in clean]
+    phrase = " ".join([w for w in words if w]).strip()
+    return phrase or None
+
+
+async def _append_gesture_transcript_log(speaker_id: int, text: str) -> None:
+    global _speech_logs_counter
+    label = _speech_speaker_label(speaker_id, None)
+    line = _speech_line(label, text, kind="gesture_transcript")
+    entry: Dict[str, Any]
+
+    async with _speech_logs_lock:
+        _speech_logs_counter += 1
+        entry = {
+            "id": _speech_logs_counter,
+            "timestamp": float(time.time()),
+            "speaker_id": int(speaker_id),
+            "speaker_name": None,
+            "speaker_label": label,
+            "confidence": 1.0,
+            "text": (text or "").strip() or "...",
+            "line": line,
+            "kind": "gesture_transcript",
+        }
+        _speech_logs.append(entry)
+        max_logs = int(os.getenv("SPEECH_LOGS_MAX", "400"))
+        if max_logs > 0 and len(_speech_logs) > max_logs:
+            del _speech_logs[:-max_logs]
+
+    await ws_broadcast({"type": "speech.log", "entry": entry})
+
+
+async def _ingest_gesture_payload_for_transcription(payload: Dict[str, Any]) -> None:
+    hands_raw = payload.get("hands")
+    if not isinstance(hands_raw, list):
+        return
+
+    now = float(time.time())
+    owner_tokens: Dict[int, str] = {}
+    for hand in hands_raw:
+        if not isinstance(hand, dict):
+            continue
+        owner_id = _safe_int(hand.get("owner_id"))
+        if owner_id is None or owner_id <= 0:
+            continue
+        raw = hand.get("gesture") if hand.get("gesture") is not None else hand.get("label")
+        token = _normalize_gesture_token(raw)
+        if not token:
+            continue
+
+        prev = owner_tokens.get(owner_id)
+        if prev is None:
+            owner_tokens[owner_id] = token
+            continue
+        p_prev = _gesture_token_priority(prev)
+        p_new = _gesture_token_priority(token)
+        if p_new > p_prev:
+            owner_tokens[owner_id] = token
+        elif p_new == p_prev and token.isdigit() and prev.isdigit() and int(token) > int(prev):
+            owner_tokens[owner_id] = token
+
+    emit: List[Tuple[int, str]] = []
+    async with _gesture_phrase_lock:
+        for owner_id, token in owner_tokens.items():
+            st = _gesture_phrase_state.setdefault(
+                owner_id,
+                {
+                    "tokens": [],
+                    "current_token": None,
+                    "current_since_ts": 0.0,
+                    "committed_token": None,
+                    "last_seen_ts": 0.0,
+                    "last_emitted_key": "",
+                    "last_emit_ts": 0.0,
+                },
+            )
+
+            if now - float(st.get("last_seen_ts", 0.0)) > _gesture_phrase_state_ttl_sec:
+                st["tokens"] = []
+                st["current_token"] = None
+                st["current_since_ts"] = 0.0
+                st["committed_token"] = None
+
+            st["last_seen_ts"] = now
+            if token != st.get("current_token"):
+                st["current_token"] = token
+                st["current_since_ts"] = now
+            else:
+                held_sec = now - float(st.get("current_since_ts", now))
+                if token != st.get("committed_token") and held_sec >= _gesture_phrase_hold_sec:
+                    tokens = list(st.get("tokens", []))
+                    tokens.append(token)
+                    st["tokens"] = tokens[-16:]
+                    st["committed_token"] = token
+
+        stale_keys: List[int] = []
+        for owner_id, st in list(_gesture_phrase_state.items()):
+            last_seen_ts = float(st.get("last_seen_ts", 0.0))
+            if now - last_seen_ts > _gesture_phrase_state_ttl_sec:
+                stale_keys.append(owner_id)
+                continue
+
+            if now - last_seen_ts < _gesture_phrase_idle_emit_sec:
+                continue
+
+            tokens = list(st.get("tokens", []))
+            phrase = _build_gesture_transcription(tokens)
+            if phrase:
+                normalized_key = phrase.strip().lower()
+                last_key = str(st.get("last_emitted_key") or "")
+                last_emit_ts = float(st.get("last_emit_ts", 0.0))
+                if normalized_key and (normalized_key != last_key or (now - last_emit_ts) > 4.0):
+                    emit.append((owner_id, phrase))
+                    st["last_emitted_key"] = normalized_key
+                    st["last_emit_ts"] = now
+
+            st["tokens"] = []
+            st["current_token"] = None
+            st["current_since_ts"] = 0.0
+            st["committed_token"] = None
+
+        for key in stale_keys:
+            _gesture_phrase_state.pop(key, None)
+
+    for speaker_id, phrase in emit:
+        await _append_gesture_transcript_log(speaker_id, phrase)
+
+
+async def _stream_event_handler(msg: Dict[str, Any]) -> None:
+    if isinstance(msg, dict) and msg.get("type") == "gesture":
+        try:
+            await _ingest_gesture_payload_for_transcription(msg)
+        except Exception:
+            pass
+    await ws_broadcast(msg)
 
 
 def _speech_logs_has_voice(vs: Any, audio: np.ndarray, sample_rate: int) -> bool:
@@ -543,7 +822,7 @@ async def video_start(
     f = int(os.getenv("GESTURE_FPS", "30")) if fps is None else int(fps)  # 30fps for smooth rendering
     tyr = float(os.getenv("TABLE_Y_RATIO", "0.80")) if table_y_ratio is None else float(table_y_ratio)
 
-    _stream = GestureStream(on_event=ws_broadcast, camera_index=cam, fps=f, table_y_ratio=tyr)
+    _stream = GestureStream(on_event=_stream_event_handler, camera_index=cam, fps=f, table_y_ratio=tyr)
     try:
         await _stream.start()
         print(f"[app] gesture stream started (camera={cam}, fps={f}, table_y_ratio={tyr})")
@@ -567,6 +846,8 @@ async def video_stop():
         return {"ok": True, "status": "not_running"}
     await _stream.stop()
     _stream = None
+    async with _gesture_phrase_lock:
+        _gesture_phrase_state.clear()
     print("[app] gesture stream stopped")
     return {"ok": True, "status": "stopped"}
 
@@ -1268,7 +1549,7 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
             asr_error = None
 
         label = _speech_speaker_label(speaker_id, speaker_name)
-        line = _speech_line(label, text)
+        line = _speech_line(label, text, kind="speech_text")
 
         entry: Optional[Dict[str, Any]] = None
         if body.add_to_logs:
@@ -1297,6 +1578,7 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
                     "confidence": float(confidence),
                     "text": (text or "").strip() or "...",
                     "line": line,
+                    "kind": "speech_text",
                 }
                 _speech_logs.append(entry)
                 max_logs = int(os.getenv("SPEECH_LOGS_MAX", "400"))
@@ -1336,11 +1618,13 @@ async def voice_logs(limit: int = 200):
 
         text = str((entry.get("text") or "").strip() or "...")
         label = _speech_speaker_label(speaker_id, speaker_name)
+        kind = str(entry.get("kind") or "speech_text")
 
         normalized = dict(entry)
         normalized["speaker_id"] = speaker_id
         normalized["speaker_label"] = label
-        normalized["line"] = _speech_line(label, text)
+        normalized["kind"] = kind
+        normalized["line"] = _speech_line(label, text, kind=kind)
         normalized_logs.append(normalized)
     return {"ok": True, "logs": normalized_logs}
 
@@ -1349,6 +1633,8 @@ async def voice_logs(limit: int = 200):
 async def voice_logs_clear():
     async with _speech_logs_lock:
         _speech_logs.clear()
+    async with _gesture_phrase_lock:
+        _gesture_phrase_state.clear()
     return {"ok": True}
 
 

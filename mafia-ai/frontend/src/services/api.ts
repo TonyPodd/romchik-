@@ -392,6 +392,7 @@ export interface SpeechLogEntry {
   confidence: number;
   text: string;
   line: string;
+  kind?: string;
 }
 
 export interface SpeechRecognizeResponse {

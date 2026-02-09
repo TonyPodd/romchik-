@@ -120,10 +120,13 @@ export function LogsSpeechPage() {
     () =>
       logs.map((log) => {
         const label = resolveSpeakerLabel(log, playerNames);
+        const kindLabel = (log.kind || '').toString().trim().toLowerCase() === 'gesture_transcript'
+          ? 'транскрипция'
+          : 'текст';
         return {
           ...log,
           speaker_label: label,
-          line: `"${label}"(текст): ${(log.text || '').trim() || '...'};`,
+          line: `"${label}"(${kindLabel}): ${(log.text || '').trim() || '...'};`,
         };
       }),
     [logs, playerNames],
