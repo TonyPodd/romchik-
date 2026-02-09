@@ -1006,6 +1006,41 @@ class GestureStream:
                                 "fingers": fingers,
                             })
 
+                        # If two hands belong to the same recognized person and both are numeric
+                        # gestures, show the same total on both hands (e.g., 4 + 3 => "7" on each).
+                        hands_by_owner: Dict[int, List[int]] = {}
+                        for idx, hand in enumerate(hands_out):
+                            owner_id = hand.get("owner_id")
+                            if isinstance(owner_id, int) and owner_id > 0:
+                                hands_by_owner.setdefault(owner_id, []).append(idx)
+
+                        for owner_id, idxs in hands_by_owner.items():
+                            if len(idxs) != 2:
+                                continue
+                            vals: List[int] = []
+                            valid_pair = True
+                            for idx in idxs:
+                                raw_gesture = str(hands_out[idx].get("gesture", "")).strip()
+                                if raw_gesture.isdigit():
+                                    v = int(raw_gesture)
+                                else:
+                                    valid_pair = False
+                                    break
+                                if v < 0 or v > 5:
+                                    valid_pair = False
+                                    break
+                                vals.append(v)
+                            if not valid_pair:
+                                continue
+
+                            total = int(sum(vals))
+                            total_label = str(total)
+                            for idx in idxs:
+                                hands_out[idx]["label"] = total_label
+                                hands_out[idx]["gesture"] = total_label
+                                hands_out[idx]["fingers_total"] = total
+                                hands_out[idx]["fingers_total_owner_id"] = owner_id
+
                     now = time.time()
                     if now - last_evt >= 0.2:
                         last_evt = now
