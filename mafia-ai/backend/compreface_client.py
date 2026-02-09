@@ -24,7 +24,8 @@ class CompreFaceClient:
         self.timeout_sec = float(os.getenv("COMPREFACE_TIMEOUT_SEC", "4.0"))
         self.similarity_threshold = float(os.getenv("COMPREFACE_SIMILARITY_THRESHOLD", "0.82"))
         self.det_prob_threshold = float(os.getenv("COMPREFACE_DET_PROB_THRESHOLD", "0.7"))
-        self.enroll_det_prob_threshold = float(os.getenv("COMPREFACE_ENROLL_DET_PROB_THRESHOLD", "0.45"))
+        self.enroll_det_prob_threshold = float(os.getenv("COMPREFACE_ENROLL_DET_PROB_THRESHOLD", "0.25"))
+        self.enroll_max_variants = max(1, int(os.getenv("COMPREFACE_ENROLL_MAX_VARIANTS", "6")))
         self.prediction_count = int(os.getenv("COMPREFACE_PREDICTION_COUNT", "3"))
         self.subject_prefix = (os.getenv("COMPREFACE_SUBJECT_PREFIX") or "player_").strip() or "player_"
 
@@ -216,7 +217,21 @@ class CompreFaceClient:
             if up_jpg:
                 variants.append(up_jpg)
 
-        # Вариант 3: мягкое улучшение контраста/яркости.
+        # Вариант 3: добавляем поля вокруг лица, чтобы детектор не "резался" по краям.
+        border = max(8, int(0.18 * float(min_side)))
+        with_border = cv2.copyMakeBorder(
+            img,
+            border,
+            border,
+            border,
+            border,
+            cv2.BORDER_REPLICATE,
+        )
+        with_border_jpg = self._encode_image(with_border, quality=95)
+        if with_border_jpg:
+            variants.append(with_border_jpg)
+
+        # Вариант 4: мягкое улучшение контраста/яркости.
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -226,6 +241,22 @@ class CompreFaceClient:
         enhanced_jpg = self._encode_image(enhanced, quality=95)
         if enhanced_jpg:
             variants.append(enhanced_jpg)
+
+        # Вариант 5: небольшой поворот (некоторые кадры приходят с наклоном головы/камеры).
+        hh, ww = img.shape[:2]
+        center = (ww * 0.5, hh * 0.5)
+        for angle in (-7.0, 7.0):
+            M = cv2.getRotationMatrix2D(center, angle, 1.0)
+            rot = cv2.warpAffine(
+                img,
+                M,
+                (ww, hh),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+            rot_jpg = self._encode_image(rot, quality=95)
+            if rot_jpg:
+                variants.append(rot_jpg)
 
         # Дедупликация по содержимому.
         dedup: List[bytes] = []
@@ -254,7 +285,7 @@ class CompreFaceClient:
         for sample in cleaned:
             sample_ok = False
             last_error: Optional[str] = None
-            for variant in self._sample_variants(bytes(sample)):
+            for variant in self._sample_variants(bytes(sample))[: self.enroll_max_variants]:
                 ok, error = self.add_face_to_subject(
                     subject,
                     variant,

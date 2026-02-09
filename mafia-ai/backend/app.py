@@ -124,6 +124,18 @@ def _expand_face_bbox(
     return max(0, x1 - px), max(0, y1 - py), min(w, x2 + px), min(h, y2 + py)
 
 
+def _compreface_crop_from_face(frame: np.ndarray, bbox: Tuple[int, int, int, int]) -> np.ndarray:
+    """
+    Для CompreFace нужен более "свободный" кроп (не слишком tight),
+    иначе их детектор часто отвечает no_face_detected.
+    """
+    x1, y1, x2, y2 = _expand_face_bbox(bbox, frame.shape, pad_ratio_x=0.30, pad_ratio_y=0.40)
+    crop = frame[y1:y2, x1:x2]
+    if crop is None or crop.size == 0:
+        return np.zeros((0, 0, 3), dtype=np.uint8)
+    return crop
+
+
 def _encode_jpeg_bytes(img_bgr: np.ndarray) -> bytes:
     if img_bgr is None or img_bgr.size == 0:
         return b""
@@ -692,7 +704,8 @@ async def players_enroll(data: Dict[str, Any] = Body(None)):
     face_subject: Optional[str] = None
     if _compreface.is_active():
         face_subject = _player_face_subject(pid)
-        sample = _encode_jpeg_bytes(crop)
+        cf_crop = _compreface_crop_from_face(frame, f["bbox"])
+        sample = _encode_jpeg_bytes(cf_crop if cf_crop.size > 0 else crop)
         reg = await asyncio.to_thread(_compreface.register_subject_samples, face_subject, [sample])
         if not bool(reg.get("ok")):
             return {"ok": False, "error": "compreface_enroll_failed", "details": reg}
@@ -789,7 +802,8 @@ async def enroll_snap():
     # пороги
     QUALITY_THR = 0.45        # Higher quality samples for better recognition
     DIVERSE_MAX_SIM = 0.88    # More diverse samples for robustness
-    sample_jpeg = _encode_jpeg_bytes(crop)
+    cf_crop = _compreface_crop_from_face(frame, f["bbox"])
+    sample_jpeg = _encode_jpeg_bytes(cf_crop if cf_crop.size > 0 else crop)
 
     # проверка качества
     if q < QUALITY_THR and since_add < 1.6:
