@@ -1,7 +1,7 @@
 # backend/video/face_id_onnx.py
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
-import os, urllib.request, hashlib
+import os, urllib.request, hashlib, shutil
 import numpy as np
 import cv2
 
@@ -9,7 +9,6 @@ import mediapipe as mp
 import onnxruntime as ort
 from pathlib import Path
 
-MODEL_URL = "https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcfaceresnet100-11.onnx"
 MODEL_SHA256 = "b3b4f6b85cfe3f29f01e8e350919edc0c587a837ec0e2b17ad27003f091f13f4"  # контрольная сумма
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 MODEL_PATH = MODELS_DIR / "arcface.onnx"
@@ -24,7 +23,36 @@ def _sha256(path: Path) -> str:
 def _ensure_model():
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     if not MODEL_PATH.exists():
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        candidates = []
+        env_model_url = os.getenv("FACE_ONNX_MODEL_URL")
+        if env_model_url:
+            candidates.append(env_model_url)
+        candidates.extend([
+            "https://huggingface.co/deepghs/insightface/resolve/main/buffalo_s/w600k_mbf.onnx?download=true",
+            "https://huggingface.co/WePrompt/buffalo_sc/resolve/main/w600k_mbf.onnx?download=true",
+            "https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcfaceresnet100-11.onnx",
+        ])
+
+        headers = {"User-Agent": "MafiaAI/face-id-onnx"}
+        tmp = MODEL_PATH.with_suffix(".part")
+        last = None
+        for url in candidates:
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
+                    shutil.copyfileobj(r, f)
+                if tmp.stat().st_size < 1_000_000:
+                    raise RuntimeError("model file too small")
+                tmp.replace(MODEL_PATH)
+                break
+            except Exception as e:
+                last = e
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        if not MODEL_PATH.exists():
+            raise RuntimeError(f"Cannot download ONNX face model: {last}")
     # простая проверка целостности (не фатальная, если не совпало — просто предупреждение)
     try:
         digest = _sha256(MODEL_PATH)

@@ -5,6 +5,8 @@ import asyncio
 import os
 import sys
 import time
+import shutil
+import urllib.request
 from typing import Optional, Callable, Awaitable, Dict, Any, Tuple, List
 
 import cv2
@@ -97,7 +99,6 @@ class _FaceBackendONNX(_FaceBackendBase):
         import onnxruntime as ort
         import mediapipe as mp
         from pathlib import Path
-        import urllib.request
 
         self.sim_threshold = sim_threshold
         self.det = mp.solutions.face_detection.FaceDetection(
@@ -106,15 +107,54 @@ class _FaceBackendONNX(_FaceBackendBase):
 
         MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        self.model_path = MODELS_DIR / "arcface.onnx"
+        env_model_path = os.getenv("FACE_ONNX_MODEL")
+        self.model_path = Path(env_model_path) if env_model_path else (MODELS_DIR / "arcface.onnx")
+        if not self.model_path.is_absolute():
+            self.model_path = MODELS_DIR / self.model_path
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.model_path.exists():
-            url = "https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcfaceresnet100-11.onnx"
-            print("[arcface] downloading model…")
-            urllib.request.urlretrieve(url, self.model_path)
+            env_model_url = os.getenv("FACE_ONNX_MODEL_URL")
+            urls = [env_model_url] if env_model_url else []
+            urls.extend([
+                "https://huggingface.co/deepghs/insightface/resolve/main/buffalo_s/w600k_mbf.onnx?download=true",
+                "https://huggingface.co/WePrompt/buffalo_sc/resolve/main/w600k_mbf.onnx?download=true",
+                "https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcfaceresnet100-11.onnx",
+            ])
+            self._download_model(urls, self.model_path)
 
         self.sess = ort.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
+        print(f"[face] ONNX model loaded: {self.model_path}")
         self.input_name = self.sess.get_inputs()[0].name
         self.output_name = self.sess.get_outputs()[0].name
+
+    @staticmethod
+    def _download_model(urls: List[Optional[str]], dst_path) -> None:
+        filtered = [u for u in urls if isinstance(u, str) and u.strip()]
+        if not filtered:
+            raise RuntimeError("No ONNX model URL configured")
+
+        headers = {"User-Agent": "MafiaAI/face-stream-worker"}
+        tmp_path = dst_path.with_suffix(".part")
+        last_error: Optional[Exception] = None
+        for url in filtered:
+            try:
+                print(f"[arcface] downloading model from: {url}")
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_path, "wb") as f:
+                    shutil.copyfileobj(resp, f)
+                if tmp_path.stat().st_size < 1_000_000:
+                    raise RuntimeError("downloaded model file is too small")
+                tmp_path.replace(dst_path)
+                return
+            except Exception as e:
+                last_error = e
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                print(f"[arcface] download failed from {url}: {e}")
+
+        raise RuntimeError(f"Cannot download face ONNX model: {last_error}")
 
     @staticmethod
     def _preprocess(face_bgr: np.ndarray) -> np.ndarray:
@@ -197,6 +237,8 @@ def _make_face_backend_initial() -> _FaceBackendBase:
     try:
         return _FaceBackendONNX(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.52")))
     except Exception as e:
+        if use == "ONNX":
+            raise RuntimeError(f"FACE_BACKEND=ONNX but ONNX init failed: {e}") from e
         print(f"[face] ONNX init failed: {e}. Falling back to LANDMARKS.")
         return _FaceBackendLandmarks(sim_threshold=float(os.getenv("FACE_SIM_THRESHOLD", "0.85")))
 
