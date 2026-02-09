@@ -75,6 +75,8 @@ _speech_logs_counter: int = 0
 _speech_asr_model: Optional[Any] = None
 _speech_asr_init_error: Optional[str] = None
 _speech_asr_lock = asyncio.Lock()
+_player_name_cache: Dict[int, str] = {}
+_player_name_cache_mtime: float = -1.0
 
 BOUNDARY = "frame"
 
@@ -268,13 +270,74 @@ def _players_add_safe(
             return P.add_player(name=name, embedding=embedding, thumb=thumb_rel)  # type: ignore[call-arg]
 
 
+def _is_generic_player_name(name: str) -> bool:
+    s = (name or "").strip().lower()
+    return (
+        s.startswith("игрок ")
+        or s.startswith("player ")
+        or s.startswith("говорящий")
+        or s.startswith("speaker")
+        or s in {"?", "неизвестный", "unknown"}
+    )
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _refresh_player_name_cache() -> None:
+    global _player_name_cache, _player_name_cache_mtime
+    db_path = os.path.join("storage", "players.json")
+    try:
+        mtime = float(os.path.getmtime(db_path))
+    except OSError:
+        mtime = -1.0
+
+    if mtime == _player_name_cache_mtime:
+        return
+
+    name_map: Dict[int, str] = {}
+    try:
+        for p in P.list_players():
+            pid = int(p.get("id")) if p.get("id") is not None else None
+            pname = (p.get("name") or "").strip()
+            if pid is not None and pname:
+                name_map[pid] = pname
+    except Exception:
+        name_map = {}
+
+    _player_name_cache = name_map
+    _player_name_cache_mtime = mtime
+
+
 def _speech_speaker_label(speaker_id: Optional[int], speaker_name: Optional[str]) -> str:
-    """Build a short speaker label for log output."""
-    if speaker_id is not None:
-        return f"говорящий {speaker_id}"
-    if speaker_name and speaker_name.strip():
+    """Resolve speaker label to player's nickname when possible."""
+    normalized_id = _safe_int(speaker_id)
+    if normalized_id is not None:
+        _refresh_player_name_cache()
+        cached_name = _player_name_cache.get(normalized_id)
+        if cached_name and not _is_generic_player_name(cached_name):
+            return cached_name
+
+        # fallback to voice profile name when it's not generic
+        try:
+            profile = get_voice_service().profiles.get(normalized_id)
+            profile_name = (profile.player_name if profile else "").strip()
+            if profile_name and not _is_generic_player_name(profile_name):
+                return profile_name
+        except Exception:
+            pass
+
+    if speaker_name and speaker_name.strip() and not _is_generic_player_name(speaker_name):
         return speaker_name.strip()
-    return "говорящий ?"
+    if normalized_id is not None:
+        return f"Игрок {normalized_id}"
+    return "Неизвестный"
 
 
 def _speech_line(label: str, text: str) -> str:
@@ -299,7 +362,7 @@ async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
         try:
             from infrastructure.audio.faster_whisper_asr import FasterWhisperASR
 
-            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "tiny"))
+            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "base"))
             language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
             device = os.getenv("SPEECH_LOG_ASR_DEVICE", "cpu")
             compute_type = os.getenv("SPEECH_LOG_ASR_COMPUTE_TYPE", "int8")
@@ -1182,7 +1245,24 @@ async def voice_logs(limit: int = 200):
     n = max(1, min(int(limit), 1000))
     async with _speech_logs_lock:
         logs = list(_speech_logs[-n:])
-    return {"ok": True, "logs": logs}
+
+    # Re-resolve labels on read so old logs also show current player nicknames.
+    normalized_logs: List[Dict[str, Any]] = []
+    for entry in logs:
+        speaker_id = _safe_int(entry.get("speaker_id"))
+        speaker_name = entry.get("speaker_name")
+        if speaker_name is not None:
+            speaker_name = str(speaker_name)
+
+        text = str((entry.get("text") or "").strip() or "...")
+        label = _speech_speaker_label(speaker_id, speaker_name)
+
+        normalized = dict(entry)
+        normalized["speaker_id"] = speaker_id
+        normalized["speaker_label"] = label
+        normalized["line"] = _speech_line(label, text)
+        normalized_logs.append(normalized)
+    return {"ok": True, "logs": normalized_logs}
 
 
 @app.post("/voice/logs/clear")

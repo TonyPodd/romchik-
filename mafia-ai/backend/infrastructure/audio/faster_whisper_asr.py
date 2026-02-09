@@ -1,5 +1,6 @@
 """Faster-Whisper ASR - быстрая транскрипция речи"""
 
+import os
 import numpy as np
 from typing import Optional
 
@@ -43,6 +44,17 @@ class FasterWhisperASR:
         self.model_size = model_size
         self.device = device
         self.language = language
+        self.beam_size = max(1, int(os.getenv("SPEECH_LOG_ASR_BEAM_SIZE", os.getenv("ASR_BEAM_SIZE", "6"))))
+        self.best_of = max(1, int(os.getenv("SPEECH_LOG_ASR_BEST_OF", os.getenv("ASR_BEST_OF", str(self.beam_size)))))
+        self.temperature = float(os.getenv("SPEECH_LOG_ASR_TEMPERATURE", os.getenv("ASR_TEMPERATURE", "0.0")))
+        self.vad_threshold = float(os.getenv("SPEECH_LOG_ASR_VAD_THRESHOLD", "0.35"))
+        self.vad_min_speech_ms = int(os.getenv("SPEECH_LOG_ASR_VAD_MIN_SPEECH_MS", "150"))
+        self.vad_min_silence_ms = int(os.getenv("SPEECH_LOG_ASR_VAD_MIN_SILENCE_MS", "220"))
+        self.initial_prompt = os.getenv(
+            "SPEECH_LOG_ASR_INITIAL_PROMPT",
+            "Диалог игроков в мафию на русском языке. Используй обычную пунктуацию и без префиксов говорящих.",
+        )
+        self.retry_without_vad = os.getenv("SPEECH_LOG_ASR_RETRY_WITHOUT_VAD", "1").strip().lower() not in {"0", "false", "no"}
 
         # Загружаем модель
         self.model = WhisperModel(
@@ -87,14 +99,16 @@ class FasterWhisperASR:
             audio,
             language=language or self.language,
             task=task,
-            beam_size=5,
-            best_of=5,
-            temperature=0.0,
+            beam_size=self.beam_size,
+            best_of=self.best_of,
+            temperature=self.temperature,
+            condition_on_previous_text=False,
+            initial_prompt=self.initial_prompt,
             vad_filter=True,  # Используем встроенный VAD
             vad_parameters=dict(
-                threshold=0.5,
-                min_speech_duration_ms=250,
-                min_silence_duration_ms=100,
+                threshold=self.vad_threshold,
+                min_speech_duration_ms=self.vad_min_speech_ms,
+                min_silence_duration_ms=self.vad_min_silence_ms,
             ),
         )
 
@@ -113,6 +127,34 @@ class FasterWhisperASR:
                 "avg_logprob": segment.avg_logprob,
                 "no_speech_prob": segment.no_speech_prob,
             })
+
+        # На коротких чанках встроенный VAD иногда срезает полезную речь полностью.
+        if self.retry_without_vad and not " ".join(full_text).strip():
+            segments, info = self.model.transcribe(
+                audio,
+                language=language or self.language,
+                task=task,
+                beam_size=max(self.beam_size, 8),
+                best_of=max(self.best_of, 8),
+                temperature=0.0,
+                condition_on_previous_text=False,
+                initial_prompt=self.initial_prompt,
+                vad_filter=False,
+            )
+
+            full_text = []
+            segments_list = []
+            for segment in segments:
+                full_text.append(segment.text)
+                segments_list.append({
+                    "id": segment.id,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                    "words": segment.words if hasattr(segment, "words") else None,
+                    "avg_logprob": segment.avg_logprob,
+                    "no_speech_prob": segment.no_speech_prob,
+                })
 
         # Результат
         transcription = Transcription(
