@@ -3,5 +3,6 @@
         "{**/.c4z/.extsrcs/*.PROTSYM.cbl,**/.c4z/.extsrcs/*.PROTSYM.listing}": true
     },
     "python-envs.defaultEnvManager": "ms-python.python:pyenv",
-    "python-envs.pythonProjects": []
+    "python-envs.pythonProjects": [],
+    "CodeGPT.apiKey": "Perplexity"
 }

@@ -2,15 +2,19 @@
 """
 Сервис регистрации и распознавания голосов игроков.
 
-Хранит профили на диске, чтобы распознавание работало после перезапуска backend.
-Использует устойчивые спектральные признаки (MFCC + deltas + spectral stats).
+Поддерживает два движка эмбеддингов:
+- resemblyzer (по умолчанию, заметно точнее для speaker-ID)
+- mfcc (fallback для совместимости)
 """
 
 from __future__ import annotations
 
 import json
 import os
+import platform
+import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,7 +22,11 @@ import librosa
 import numpy as np
 
 TARGET_SR = 16000
-FEATURE_DIM = 166
+FEATURE_DIM_MFCC = 166
+FEATURE_DIM_RESEMBLYZER = 256
+
+EMBEDDER_RESEMBLYZER = "resemblyzer_v1"
+EMBEDDER_MFCC = "mfcc_v1"
 
 
 @dataclass
@@ -29,6 +37,7 @@ class VoiceProfile:
     player_name: str
     embeddings: List[np.ndarray]
     created_at: float
+    embedder: str = EMBEDDER_MFCC
 
 
 class VoiceService:
@@ -37,13 +46,27 @@ class VoiceService:
     def __init__(
         self,
         similarity_threshold: float = 0.72,
-        min_margin: float = 0.0,
+        min_margin: float = 0.015,
         storage_path: str = "storage/voice_profiles.json",
     ) -> None:
         self.profiles: Dict[int, VoiceProfile] = {}
-        self.similarity_threshold = similarity_threshold
-        self.min_margin = min_margin
+        self.similarity_threshold = float(
+            os.getenv("VOICE_SIMILARITY_THRESHOLD", str(similarity_threshold))
+        )
+        self.min_margin = float(os.getenv("VOICE_MIN_MARGIN", str(min_margin)))
         self.storage_path = storage_path
+
+        # resemblyzer runtime
+        self._resemblyzer_encoder: Optional[Any] = None
+        self._resemblyzer_device: str = "cpu"
+        self._resemblyzer_lock = threading.Lock()
+
+        # Requested mode: resemblyzer | mfcc | auto
+        self.preferred_embedder = (
+            os.getenv("VOICE_EMBEDDER", "resemblyzer").strip().lower()
+        )
+
+        self._init_resemblyzer()
         self._load_profiles()
 
     def _normalize(self, vec: np.ndarray) -> np.ndarray:
@@ -58,19 +81,103 @@ class VoiceService:
         if data.size == 0:
             return data
 
-        data = np.nan_to_num(data)
+        data = np.nan_to_num(data, copy=False)
         peak = float(np.max(np.abs(data)))
-        if peak > 0:
+        if peak > 1e-8:
             data = data / peak
 
         if sr != TARGET_SR and sr > 0:
-            data = librosa.resample(data, orig_sr=sr, target_sr=TARGET_SR)
+            data = librosa.resample(
+                data,
+                orig_sr=sr,
+                target_sr=TARGET_SR,
+                res_type=os.getenv("VOICE_RESAMPLE_TYPE", "polyphase"),
+            )
 
         trimmed, _ = librosa.effects.trim(data, top_db=28)
         if trimmed.size > 0:
             data = trimmed
 
         return data.astype(np.float32)
+
+    def _resolve_resemblyzer_device(self) -> str:
+        requested = os.getenv("VOICE_EMBEDDER_DEVICE", "auto").strip().lower()
+        if requested in {"cpu", "cuda", "mps"}:
+            return requested
+
+        try:
+            import torch
+
+            if platform.system() == "Darwin" and torch.backends.mps.is_available():
+                return "mps"
+            if torch.cuda.is_available():
+                return "cuda"
+        except Exception:
+            pass
+        return "cpu"
+
+    def _init_resemblyzer(self) -> None:
+        if self.preferred_embedder not in {"resemblyzer", "auto", EMBEDDER_RESEMBLYZER}:
+            return
+        try:
+            from resemblyzer import VoiceEncoder
+
+            self._resemblyzer_device = self._resolve_resemblyzer_device()
+            self._resemblyzer_encoder = VoiceEncoder(device=self._resemblyzer_device)
+            print(f"[voice] Resemblyzer enabled (device={self._resemblyzer_device})")
+        except Exception as exc:
+            self._resemblyzer_encoder = None
+            print(f"[voice] Resemblyzer unavailable, fallback to MFCC: {exc}")
+
+    def _active_embedder_for_registration(self) -> str:
+        if self.profiles and os.getenv("VOICE_FORCE_EMBEDDER", "0").strip().lower() not in {"1", "true", "yes"}:
+            counts = Counter((p.embedder or EMBEDDER_MFCC) for p in self.profiles.values())
+            dominant = counts.most_common(1)[0][0]
+            if dominant == EMBEDDER_RESEMBLYZER and self._resemblyzer_encoder is not None:
+                return EMBEDDER_RESEMBLYZER
+            return EMBEDDER_MFCC
+
+        pref = self.preferred_embedder
+        if pref in {"mfcc", EMBEDDER_MFCC}:
+            return EMBEDDER_MFCC
+        if pref in {"resemblyzer", EMBEDDER_RESEMBLYZER}:
+            return EMBEDDER_RESEMBLYZER if self._resemblyzer_encoder is not None else EMBEDDER_MFCC
+
+        # auto
+        if self.profiles:
+            counts = Counter((p.embedder or EMBEDDER_MFCC) for p in self.profiles.values())
+            if counts.get(EMBEDDER_RESEMBLYZER, 0) > 0 and self._resemblyzer_encoder is not None:
+                return EMBEDDER_RESEMBLYZER
+            if counts.get(EMBEDDER_MFCC, 0) > 0:
+                return EMBEDDER_MFCC
+        return EMBEDDER_RESEMBLYZER if self._resemblyzer_encoder is not None else EMBEDDER_MFCC
+
+    def _active_embedder_for_identification(self) -> str:
+        counts = Counter((p.embedder or EMBEDDER_MFCC) for p in self.profiles.values())
+        pref = self.preferred_embedder
+
+        if pref in {"resemblyzer", EMBEDDER_RESEMBLYZER}:
+            if counts.get(EMBEDDER_RESEMBLYZER, 0) > 0 and self._resemblyzer_encoder is not None:
+                return EMBEDDER_RESEMBLYZER
+            if counts.get(EMBEDDER_MFCC, 0) > 0:
+                return EMBEDDER_MFCC
+            return EMBEDDER_RESEMBLYZER if self._resemblyzer_encoder is not None else EMBEDDER_MFCC
+
+        if pref in {"mfcc", EMBEDDER_MFCC}:
+            if counts.get(EMBEDDER_MFCC, 0) > 0:
+                return EMBEDDER_MFCC
+            if counts.get(EMBEDDER_RESEMBLYZER, 0) > 0 and self._resemblyzer_encoder is not None:
+                return EMBEDDER_RESEMBLYZER
+            return EMBEDDER_MFCC
+
+        # auto: prefer dominant embedder in storage
+        if counts:
+            dominant = counts.most_common(1)[0][0]
+            if dominant == EMBEDDER_RESEMBLYZER and self._resemblyzer_encoder is not None:
+                return EMBEDDER_RESEMBLYZER
+            return EMBEDDER_MFCC
+
+        return EMBEDDER_RESEMBLYZER if self._resemblyzer_encoder is not None else EMBEDDER_MFCC
 
     def detect_voice_activity(
         self,
@@ -89,14 +196,13 @@ class VoiceService:
         voiced_ratio = float(np.mean(np.abs(data) > max(0.05, 0.12 * peak)))
         return rms >= energy_threshold and voiced_ratio >= 0.05
 
-    def extract_features(self, audio: np.ndarray, sr: int = TARGET_SR) -> np.ndarray:
-        """Извлекает фиксированный вектор признаков для speaker matching."""
+    def _extract_features_mfcc(self, audio: np.ndarray, sr: int = TARGET_SR) -> np.ndarray:
+        """Fallback-эмбеддинг: MFCC + deltas + spectral stats."""
         try:
             data = self._prepare_audio(audio, sr)
             if data.size < int(TARGET_SR * 0.3):
-                return np.zeros(FEATURE_DIM, dtype=np.float32)
+                return np.zeros(FEATURE_DIM_MFCC, dtype=np.float32)
 
-            # Pre-emphasis делает форму спектра стабильнее для speaker-ID.
             data = librosa.effects.preemphasis(data)
 
             mfcc = librosa.feature.mfcc(y=data, sr=TARGET_SR, n_mfcc=13)
@@ -140,21 +246,61 @@ class VoiceService:
                 axis=0,
             ).astype(np.float32)
 
-            if feature_vector.shape[0] != FEATURE_DIM:
-                return np.zeros(FEATURE_DIM, dtype=np.float32)
+            if feature_vector.shape[0] != FEATURE_DIM_MFCC:
+                return np.zeros(FEATURE_DIM_MFCC, dtype=np.float32)
 
             return self._normalize(feature_vector)
         except Exception as exc:
-            print(f"[voice] Feature extraction failed: {exc}")
-            return np.zeros(FEATURE_DIM, dtype=np.float32)
+            print(f"[voice] MFCC feature extraction failed: {exc}")
+            return np.zeros(FEATURE_DIM_MFCC, dtype=np.float32)
+
+    def _extract_features_resemblyzer(self, audio: np.ndarray, sr: int = TARGET_SR) -> np.ndarray:
+        """Primary-эмбеддинг: Resemblyzer d-vector."""
+        if self._resemblyzer_encoder is None:
+            return np.zeros(FEATURE_DIM_RESEMBLYZER, dtype=np.float32)
+        try:
+            data = self._prepare_audio(audio, sr)
+            if data.size < int(TARGET_SR * 0.7):
+                return np.zeros(FEATURE_DIM_RESEMBLYZER, dtype=np.float32)
+
+            with self._resemblyzer_lock:
+                vec = self._resemblyzer_encoder.embed_utterance(data)
+            out = np.asarray(vec, dtype=np.float32).flatten()
+            if out.size != FEATURE_DIM_RESEMBLYZER:
+                return np.zeros(FEATURE_DIM_RESEMBLYZER, dtype=np.float32)
+            return self._normalize(out)
+        except Exception as exc:
+            print(f"[voice] Resemblyzer feature extraction failed: {exc}")
+            return np.zeros(FEATURE_DIM_RESEMBLYZER, dtype=np.float32)
+
+    def extract_features(
+        self,
+        audio: np.ndarray,
+        sr: int = TARGET_SR,
+        embedder: Optional[str] = None,
+    ) -> np.ndarray:
+        kind = (embedder or EMBEDDER_MFCC).strip().lower()
+        if kind in {"resemblyzer", EMBEDDER_RESEMBLYZER}:
+            return self._extract_features_resemblyzer(audio, sr)
+        return self._extract_features_mfcc(audio, sr)
 
     def _profile_similarity(self, query: np.ndarray, embeddings: List[np.ndarray]) -> float:
+        if query.ndim != 1 or query.size == 0:
+            return -1.0
         if not embeddings:
             return -1.0
-        sims = [float(np.dot(query, emb)) for emb in embeddings]
-        sims.sort(reverse=True)
-        top = sims[: min(3, len(sims))]
-        return float(0.7 * np.mean(top) + 0.3 * sims[0])
+
+        valid_sims: List[float] = []
+        for emb in embeddings:
+            if emb.shape != query.shape:
+                continue
+            valid_sims.append(float(np.dot(query, emb)))
+        if not valid_sims:
+            return -1.0
+
+        valid_sims.sort(reverse=True)
+        top = valid_sims[: min(3, len(valid_sims))]
+        return float(0.7 * np.mean(top) + 0.3 * valid_sims[0])
 
     def register_voice(
         self,
@@ -166,11 +312,12 @@ class VoiceService:
         """Регистрирует или обновляет голосовой профиль игрока."""
         try:
             name = (player_name or "").strip() or f"Игрок {player_id}"
+            embedder = self._active_embedder_for_registration()
             valid_embeddings: List[np.ndarray] = []
 
             for sample in audio_samples:
                 if self.detect_voice_activity(sample, sr):
-                    emb = self.extract_features(sample, sr)
+                    emb = self.extract_features(sample, sr, embedder=embedder)
                     if np.linalg.norm(emb) > 0:
                         valid_embeddings.append(emb)
 
@@ -183,10 +330,14 @@ class VoiceService:
                 player_name=name,
                 embeddings=valid_embeddings,
                 created_at=time.time(),
+                embedder=embedder,
             )
             self._save_profiles()
 
-            print(f"[voice] Registered {name} with {len(valid_embeddings)} samples")
+            print(
+                f"[voice] Registered {name} with {len(valid_embeddings)} samples "
+                f"(embedder={embedder})"
+            )
             return True
         except Exception as exc:
             print(f"[voice] Registration failed: {exc}")
@@ -204,14 +355,20 @@ class VoiceService:
         if not self.detect_voice_activity(audio, sr):
             return []
 
-        query = self.extract_features(audio, sr)
+        target_embedder = self._active_embedder_for_identification()
+        query = self.extract_features(audio, sr, embedder=target_embedder)
         if np.linalg.norm(query) <= 0:
             return []
 
-        ranked: List[Tuple[int, str, float]] = []
+        ranked: List[Tuple[int, str, float, str]] = []
         for profile in self.profiles.values():
+            profile_embedder = (profile.embedder or EMBEDDER_MFCC).strip().lower()
+            if profile_embedder != target_embedder:
+                continue
             score = self._profile_similarity(query, profile.embeddings)
-            ranked.append((profile.player_id, profile.player_name, score))
+            if score <= -0.5:
+                continue
+            ranked.append((profile.player_id, profile.player_name, score, profile_embedder))
 
         ranked.sort(key=lambda item: item[2], reverse=True)
         return [
@@ -219,8 +376,9 @@ class VoiceService:
                 "player_id": pid,
                 "player_name": name,
                 "score": float(score),
+                "embedder": embedder,
             }
-            for pid, name, score in ranked[: max(1, k)]
+            for pid, name, score, embedder in ranked[: max(1, k)]
         ]
 
     def identify_speaker(
@@ -234,18 +392,23 @@ class VoiceService:
             return None
 
         best = ranked[0]
-        if best["score"] < self.similarity_threshold:
+        best_score = float(best["score"])
+        if best_score < self.similarity_threshold:
             return None
 
-        if self.min_margin > 0 and len(ranked) > 1:
-            margin = float(best["score"] - ranked[1]["score"])
-            if margin < self.min_margin:
+        if len(ranked) > 1:
+            margin = best_score - float(ranked[1]["score"])
+            # Защита от ложного выбора "первого профиля" при почти равных score.
+            hard_ambiguity_margin = float(os.getenv("VOICE_HARD_AMBIGUITY_MARGIN", "0.02"))
+            if best_score >= 0.90 and margin < hard_ambiguity_margin:
+                return None
+            if self.min_margin > 0 and margin < self.min_margin:
                 return None
 
         return (
             int(best["player_id"]),
             str(best["player_name"]),
-            float(best["score"]),
+            best_score,
         )
 
     def list_profiles(self) -> List[Dict[str, Any]]:
@@ -256,6 +419,7 @@ class VoiceService:
                 "player_name": profile.player_name,
                 "samples_count": len(profile.embeddings),
                 "created_at": profile.created_at,
+                "embedder": profile.embedder,
             }
             for profile in sorted(self.profiles.values(), key=lambda item: item.player_id)
         ]
@@ -283,6 +447,7 @@ class VoiceService:
                     "player_id": profile.player_id,
                     "player_name": profile.player_name,
                     "created_at": profile.created_at,
+                    "embedder": profile.embedder,
                     "embeddings": [emb.tolist() for emb in profile.embeddings],
                 }
                 for profile in self.profiles.values()
@@ -313,18 +478,24 @@ class VoiceService:
                     continue
 
                 pid = int(item["player_id"])
+                embedder = str(item.get("embedder") or EMBEDDER_MFCC).strip().lower()
                 loaded_profiles[pid] = VoiceProfile(
                     player_id=pid,
                     player_name=str(item.get("player_name") or f"Игрок {pid}"),
                     embeddings=embeddings,
                     created_at=float(item.get("created_at") or time.time()),
+                    embedder=embedder,
                 )
             except Exception:
                 continue
 
         self.profiles = loaded_profiles
         if loaded_profiles:
-            print(f"[voice] Loaded {len(loaded_profiles)} profiles from disk")
+            counts = Counter((p.embedder or EMBEDDER_MFCC) for p in loaded_profiles.values())
+            print(
+                f"[voice] Loaded {len(loaded_profiles)} profiles from disk "
+                f"(embedder split: {dict(counts)})"
+            )
 
 
 _voice_service: Optional[VoiceService] = None

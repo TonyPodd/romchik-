@@ -19,6 +19,7 @@ faster-whisper==1.0.3       # Optimized Whisper ASR
 soundfile==0.12.1           # Audio I/O
 pyaudio==0.2.14             # Microphone capture (optional)
 librosa==0.10.2.post1       # Feature extraction for speaker ID
+Resemblyzer==0.1.4          # Robust speaker embeddings (Apple Silicon friendly with MPS)
 
 # Game State Machine
 python-statemachine==2.3.0

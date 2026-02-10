@@ -63,6 +63,7 @@ app.include_router(game_router.router)
 clients: Set[WebSocket] = set()
 _stream: Optional[GestureStream] = None
 _compreface = get_compreface_client()
+_video_lifecycle_lock = asyncio.Lock()
 
 # сессия энролла (простая dict-структура)
 _enroll: Optional[dict] = None
@@ -815,41 +816,57 @@ async def video_start(
     POST /video/start?camera_index=0&fps=30&table_y_ratio=0.8
     """
     global _stream
-    if _stream:
-        return {"ok": True, "status": "already_running"}
+    async with _video_lifecycle_lock:
+        if _stream:
+            return {"ok": True, "status": "already_running"}
 
-    cam = int(os.getenv("CAMERA_INDEX", "0")) if camera_index is None else int(camera_index)
-    f = int(os.getenv("GESTURE_FPS", "30")) if fps is None else int(fps)  # 30fps for smooth rendering
-    tyr = float(os.getenv("TABLE_Y_RATIO", "0.80")) if table_y_ratio is None else float(table_y_ratio)
+        cam = int(os.getenv("CAMERA_INDEX", "0")) if camera_index is None else int(camera_index)
+        f = int(os.getenv("GESTURE_FPS", "30")) if fps is None else int(fps)  # 30fps for smooth rendering
+        tyr = float(os.getenv("TABLE_Y_RATIO", "0.80")) if table_y_ratio is None else float(table_y_ratio)
+        start_timeout_sec = float(os.getenv("VIDEO_START_TIMEOUT_SEC", "15"))
 
-    _stream = GestureStream(on_event=_stream_event_handler, camera_index=cam, fps=f, table_y_ratio=tyr)
-    try:
-        await _stream.start()
-        print(f"[app] gesture stream started (camera={cam}, fps={f}, table_y_ratio={tyr})")
-        return {
-            "ok": True,
-            "camera_index": cam,
-            "fps": f,
-            "table_y_ratio": tyr,
-            "gestures_enabled": _stream.gestures_enabled,
-            "face_match_enabled": _stream.face_match_enabled,
-        }
-    except Exception as e:
-        _stream = None
-        print(f"[app] gesture stream failed: {e}")
-        return {"ok": False, "error": str(e)}
+        _stream = GestureStream(on_event=_stream_event_handler, camera_index=cam, fps=f, table_y_ratio=tyr)
+        try:
+            await asyncio.wait_for(_stream.start(), timeout=max(3.0, start_timeout_sec))
+            print(f"[app] gesture stream started (camera={cam}, fps={f}, table_y_ratio={tyr})")
+            return {
+                "ok": True,
+                "camera_index": cam,
+                "fps": f,
+                "table_y_ratio": tyr,
+                "gestures_enabled": _stream.gestures_enabled,
+                "face_match_enabled": _stream.face_match_enabled,
+            }
+        except asyncio.TimeoutError:
+            try:
+                await asyncio.wait_for(_stream.stop(), timeout=3.0)
+            except Exception:
+                pass
+            _stream = None
+            msg = f"video_start_timeout_after_{int(start_timeout_sec)}s"
+            print(f"[app] gesture stream failed: {msg}")
+            return {"ok": False, "error": msg}
+        except Exception as e:
+            try:
+                await asyncio.wait_for(_stream.stop(), timeout=3.0)
+            except Exception:
+                pass
+            _stream = None
+            print(f"[app] gesture stream failed: {e}")
+            return {"ok": False, "error": str(e)}
 
 @app.post("/video/stop")
 async def video_stop():
     global _stream
-    if not _stream:
-        return {"ok": True, "status": "not_running"}
-    await _stream.stop()
-    _stream = None
-    async with _gesture_phrase_lock:
-        _gesture_phrase_state.clear()
-    print("[app] gesture stream stopped")
-    return {"ok": True, "status": "stopped"}
+    async with _video_lifecycle_lock:
+        if not _stream:
+            return {"ok": True, "status": "not_running"}
+        await _stream.stop()
+        _stream = None
+        async with _gesture_phrase_lock:
+            _gesture_phrase_state.clear()
+        print("[app] gesture stream stopped")
+        return {"ok": True, "status": "stopped"}
 
 
 class _VideoGesturesIn(BaseModel):
@@ -915,7 +932,7 @@ async def _startup():
     container = get_container()
     print("[App] ✅ ServiceContainer initialized")
 
-    auto = os.getenv("AUTO_START_GESTURES", "1") == "1"
+    auto = os.getenv("AUTO_START_GESTURES", "0") == "1"
     if auto:
         await video_start()
 
@@ -1514,6 +1531,11 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
 
         vs = get_voice_service()
         has_voice = await asyncio.to_thread(_speech_logs_has_voice, vs, audio_array, body.sample_rate)
+        rms = float(np.sqrt(np.mean(audio_array * audio_array))) if audio_array.size > 0 else 0.0
+        peak = float(np.max(np.abs(audio_array))) if audio_array.size > 0 else 0.0
+        fallback_rms = float(os.getenv("SPEECH_LOGS_ASR_FALLBACK_RMS", "0.004"))
+        fallback_peak = float(os.getenv("SPEECH_LOGS_ASR_FALLBACK_PEAK", "0.025"))
+        should_try_asr = bool(has_voice or rms >= fallback_rms or peak >= fallback_peak)
         speaker_id: Optional[int] = None
         speaker_name: Optional[str] = None
         confidence = 0.0
@@ -1537,6 +1559,7 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
                     if guess:
                         speaker_id, speaker_name, confidence = guess
 
+        if should_try_asr:
             asr_timeout = float(os.getenv("SPEECH_LOG_ASR_TIMEOUT_SEC", "30"))
             try:
                 text, asr_error = await asyncio.wait_for(
@@ -1548,12 +1571,15 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
         else:
             asr_error = None
 
+        text_clean = (text or "").strip()
+
         label = _speech_speaker_label(speaker_id, speaker_name)
         line = _speech_line(label, text, kind="speech_text")
 
         entry: Optional[Dict[str, Any]] = None
         if body.add_to_logs:
-            if not has_voice and os.getenv("SPEECH_LOGS_INCLUDE_SILENCE", "0").strip().lower() in {"0", "false", "no"}:
+            include_silence = os.getenv("SPEECH_LOGS_INCLUDE_SILENCE", "0").strip().lower() not in {"0", "false", "no"}
+            if not include_silence and not has_voice and not text_clean:
                 return {
                     "ok": True,
                     "speaker_id": None,
@@ -1565,7 +1591,7 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
                     "asr_error": None,
                     "entry": None,
                     "skipped": True,
-                    "reason": "no_speech",
+                    "reason": "vad_no_speech",
                 }
             async with _speech_logs_lock:
                 _speech_logs_counter += 1

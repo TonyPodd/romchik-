@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import time
+import platform
 import shutil
 import urllib.request
 from typing import Optional, Callable, Awaitable, Dict, Any, Tuple, List
@@ -24,6 +25,9 @@ RENDER_TABLE = 1  # только линия/полигон стола
 RENDER_FULL  = 2  # лица + руки + стол
 
 # ---------------- Camera helpers ----------------
+
+def _is_apple_silicon() -> bool:
+    return sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}
 
 def _try_open(index: int, api: Optional[int]) -> Optional[cv2.VideoCapture]:
     cap = cv2.VideoCapture(index, api) if api is not None else cv2.VideoCapture(index)
@@ -50,8 +54,10 @@ def _open_capture(idx: int) -> cv2.VideoCapture:
         if cap:
             print(f"[camera] opened index={idx} api={api}")
             try:
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(os.getenv("CAM_WIDTH", "1280")))
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(os.getenv("CAM_HEIGHT", "720")))
+                default_w = "960" if _is_apple_silicon() else "1280"
+                default_h = "540" if _is_apple_silicon() else "720"
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(os.getenv("CAM_WIDTH", default_w)))
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(os.getenv("CAM_HEIGHT", default_h)))
                 if os.getenv("FORCE_MJPEG", "0") == "1":
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             except Exception as e:
@@ -130,8 +136,10 @@ class _FaceBackendONNX(_FaceBackendBase):
         from pathlib import Path
 
         self.sim_threshold = sim_threshold
+        det_default = "0" if _is_apple_silicon() else "1"
         self.det = mp.solutions.face_detection.FaceDetection(
-            model_selection=1, min_detection_confidence=0.6
+            model_selection=_safe_int(os.getenv("FACE_DET_MODEL_SELECTION", det_default), default=1),
+            min_detection_confidence=float(os.getenv("FACE_DET_MIN_CONFIDENCE", "0.6")),
         )
 
         MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
@@ -151,8 +159,26 @@ class _FaceBackendONNX(_FaceBackendBase):
             ])
             self._download_model(urls, self.model_path)
 
-        self.sess = ort.InferenceSession(str(self.model_path), providers=["CPUExecutionProvider"])
-        print(f"[face] ONNX model loaded: {self.model_path}")
+        available = list(ort.get_available_providers())
+        providers_env = [p.strip() for p in os.getenv("FACE_ONNX_PROVIDERS", "").split(",") if p.strip()]
+        if providers_env:
+            preferred_providers = providers_env
+        elif _is_apple_silicon():
+            preferred_providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        else:
+            preferred_providers = ["CPUExecutionProvider"]
+        providers = [p for p in preferred_providers if p in available] or ["CPUExecutionProvider"]
+
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+        default_threads = "2" if _is_apple_silicon() else "0"
+        threads = max(0, _safe_int(os.getenv("FACE_ONNX_THREADS", default_threads), default=0))
+        if threads > 0:
+            opts.intra_op_num_threads = threads
+            opts.inter_op_num_threads = 1
+
+        self.sess = ort.InferenceSession(str(self.model_path), sess_options=opts, providers=providers)
+        print(f"[face] ONNX model loaded: {self.model_path} providers={self.sess.get_providers()}")
         self.input_name = self.sess.get_inputs()[0].name
         self.output_name = self.sess.get_outputs()[0].name
 
@@ -297,11 +323,18 @@ class GestureStream:
         self._face_failed = False
         self._compreface = get_compreface_client()
 
-        default_every = "2" if self._compreface.is_active() else "1"
+        if _is_apple_silicon():
+            default_every = "3" if self._compreface.is_active() else "2"
+            default_max_side = "960"
+        else:
+            default_every = "2" if self._compreface.is_active() else "1"
+            default_max_side = "0"
         self._face_analyze_every = max(1, _safe_int(os.getenv("FACE_ANALYZE_EVERY_N", default_every), default=1))
+        self._face_analyze_max_side = max(0, _safe_int(os.getenv("FACE_ANALYZE_MAX_SIDE", default_max_side), default=0))
         self._compreface_match_interval_sec = float(os.getenv("COMPREFACE_MATCH_INTERVAL_SEC", "0.45"))
         self._compreface_cache_ttl_sec = float(os.getenv("COMPREFACE_CACHE_TTL_SEC", "1.25"))
         self._compreface_min_face_size = max(24, _safe_int(os.getenv("COMPREFACE_MIN_FACE_SIZE", "72"), default=72))
+        self._face_overlay_light = os.getenv("FACE_OVERLAY_LIGHT", "1" if _is_apple_silicon() else "0").strip().lower() in {"1", "true", "yes"}
 
         self._cap: Optional[cv2.VideoCapture] = None
         self._task: Optional[asyncio.Task] = None
@@ -529,15 +562,41 @@ class GestureStream:
             self._face_failed = True
 
     def _safe_face_analyze(self, frame: np.ndarray) -> List[Dict[str, Any]]:
+        analyze_frame = frame
+        scale = 1.0
+        if self._face_analyze_max_side > 0:
+            h, w = frame.shape[:2]
+            max_side = max(h, w)
+            if max_side > self._face_analyze_max_side:
+                scale = float(self._face_analyze_max_side) / float(max_side)
+                new_w = max(1, int(round(w * scale)))
+                new_h = max(1, int(round(h * scale)))
+                analyze_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
         try:
-            return self._face.analyze(frame)
+            faces = self._face.analyze(analyze_frame)
         except Exception:
             self._fallback_face_backend()
             try:
-                return self._face.analyze(frame)
+                faces = self._face.analyze(analyze_frame)
             except Exception as e2:
                 print(f"[face] analyze failed even in fallback: {e2}")
                 return []
+
+        if scale < 0.999 and faces:
+            inv = 1.0 / scale
+            h0, w0 = frame.shape[:2]
+            for f in faces:
+                bb = f.get("bbox")
+                if not isinstance(bb, (tuple, list)) or len(bb) != 4:
+                    continue
+                x1, y1, x2, y2 = bb
+                sx1 = max(0, min(w0, int(round(float(x1) * inv))))
+                sy1 = max(0, min(h0, int(round(float(y1) * inv))))
+                sx2 = max(0, min(w0, int(round(float(x2) * inv))))
+                sy2 = max(0, min(h0, int(round(float(y2) * inv))))
+                f["bbox"] = (sx1, sy1, sx2, sy2)
+        return faces
 
     # --- Matching ---
 
@@ -826,32 +885,37 @@ class GestureStream:
 
             # Анимация для распознанных лиц
             if pid:
-                # Плавная пульсация (30 frames цикл)
-                pulse = np.sin(self._frame_counter * 0.1) * 0.3 + 0.7  # от 0.4 до 1.0
-                color_r = int(103 * pulse)
-                color_g = int(184 * pulse)
-                color_b = int(255 * pulse)
-                color = (color_b, color_g, color_r)
-                thickness = 3 if pulse > 0.85 else 2
+                if self._face_overlay_light:
+                    # Lighter overlay for lower CPU usage on weaker devices.
+                    color = (255, 184, 103)
+                    cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+                else:
+                    # Плавная пульсация (30 frames цикл)
+                    pulse = np.sin(self._frame_counter * 0.1) * 0.3 + 0.7  # от 0.4 до 1.0
+                    color_r = int(103 * pulse)
+                    color_g = int(184 * pulse)
+                    color_b = int(255 * pulse)
+                    color = (color_b, color_g, color_r)
+                    thickness = 3 if pulse > 0.85 else 2
 
-                # Рисуем прямоугольник с анимацией
-                cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
+                    # Рисуем прямоугольник с анимацией
+                    cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
 
-                # Добавляем угловые акценты
-                corner_len = 20
-                corner_color = (color_b, color_g, color_r)
-                # Верхний левый
-                cv2.line(out, (x1, y1), (x1 + corner_len, y1), corner_color, 4)
-                cv2.line(out, (x1, y1), (x1, y1 + corner_len), corner_color, 4)
-                # Верхний правый
-                cv2.line(out, (x2, y1), (x2 - corner_len, y1), corner_color, 4)
-                cv2.line(out, (x2, y1), (x2, y1 + corner_len), corner_color, 4)
-                # Нижний левый
-                cv2.line(out, (x1, y2), (x1 + corner_len, y2), corner_color, 4)
-                cv2.line(out, (x1, y2), (x1, y2 - corner_len), corner_color, 4)
-                # Нижний правый
-                cv2.line(out, (x2, y2), (x2 - corner_len, y2), corner_color, 4)
-                cv2.line(out, (x2, y2), (x2, y2 - corner_len), corner_color, 4)
+                    # Добавляем угловые акценты
+                    corner_len = 20
+                    corner_color = (color_b, color_g, color_r)
+                    # Верхний левый
+                    cv2.line(out, (x1, y1), (x1 + corner_len, y1), corner_color, 4)
+                    cv2.line(out, (x1, y1), (x1, y1 + corner_len), corner_color, 4)
+                    # Верхний правый
+                    cv2.line(out, (x2, y1), (x2 - corner_len, y1), corner_color, 4)
+                    cv2.line(out, (x2, y1), (x2, y1 + corner_len), corner_color, 4)
+                    # Нижний левый
+                    cv2.line(out, (x1, y2), (x1 + corner_len, y2), corner_color, 4)
+                    cv2.line(out, (x1, y2), (x1, y2 - corner_len), corner_color, 4)
+                    # Нижний правый
+                    cv2.line(out, (x2, y2), (x2 - corner_len, y2), corner_color, 4)
+                    cv2.line(out, (x2, y2), (x2, y2 - corner_len), corner_color, 4)
             else:
                 # Простой серый прямоугольник для нераспознанных лиц
                 color = (120, 120, 120)

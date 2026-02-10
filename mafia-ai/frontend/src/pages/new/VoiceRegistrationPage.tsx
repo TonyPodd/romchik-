@@ -22,8 +22,8 @@ type TestResult = {
   confidence: number;
 };
 
-const REGISTER_DURATION_MS = 4200;
-const TEST_DURATION_MS = 2800;
+const REGISTER_DURATION_MS = 5200;
+const TEST_DURATION_MS = 3600;
 const TARGET_SAMPLE_RATE = 16000;
 
 function buildPlayers(
@@ -273,9 +273,12 @@ export function VoiceRegistrationPage() {
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          // For speaker-ID we need raw timbre; aggressive browser DSP hurts recognition quality.
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1,
+          sampleRate: TARGET_SAMPLE_RATE,
         },
       });
       mediaStreamRef.current = stream;

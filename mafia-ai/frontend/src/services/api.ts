@@ -78,7 +78,7 @@ export interface EnrollFinishResponse {
 // Video API
 export async function startVideo(): Promise<{ ok: boolean; [key: string]: any }> {
   console.log('[API] Calling POST /video/start...');
-  const res = await fetchWithTimeout(`${API_BASE}/video/start`, { method: 'POST' });
+  const res = await fetchWithTimeout(`${API_BASE}/video/start`, { method: 'POST' }, 25000);
   const data = await res.json();
   console.log('[API] /video/start response:', data);
   return data;
@@ -244,6 +244,7 @@ export interface VoiceProfile {
   player_name: string;
   samples_count: number;
   created_at: number;
+  embedder?: string;
 }
 
 export interface VoiceRegisterResponse {
