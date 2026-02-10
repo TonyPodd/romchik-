@@ -324,14 +324,14 @@ class GestureStream:
         self._compreface = get_compreface_client()
 
         if _is_apple_silicon():
-            default_every = "3" if self._compreface.is_active() else "2"
-            default_max_side = "960"
+            default_every = "4" if self._compreface.is_active() else "3"
+            default_max_side = "768"
         else:
             default_every = "2" if self._compreface.is_active() else "1"
             default_max_side = "0"
         self._face_analyze_every = max(1, _safe_int(os.getenv("FACE_ANALYZE_EVERY_N", default_every), default=1))
         self._face_analyze_max_side = max(0, _safe_int(os.getenv("FACE_ANALYZE_MAX_SIDE", default_max_side), default=0))
-        self._compreface_match_interval_sec = float(os.getenv("COMPREFACE_MATCH_INTERVAL_SEC", "0.45"))
+        self._compreface_match_interval_sec = float(os.getenv("COMPREFACE_MATCH_INTERVAL_SEC", "0.75"))
         self._compreface_cache_ttl_sec = float(os.getenv("COMPREFACE_CACHE_TTL_SEC", "1.25"))
         self._compreface_min_face_size = max(24, _safe_int(os.getenv("COMPREFACE_MIN_FACE_SIZE", "72"), default=72))
         self._face_overlay_light = os.getenv("FACE_OVERLAY_LIGHT", "1" if _is_apple_silicon() else "0").strip().lower() in {"1", "true", "yes"}
@@ -706,7 +706,7 @@ class GestureStream:
         used_cache_indices: set[int] = set()
         margin_high = float(os.getenv("COMPREFACE_SECOND_BEST_MARGIN", "0.055"))
         margin_low = float(os.getenv("COMPREFACE_SECOND_BEST_MARGIN_LOW_CONF", "0.035"))
-        recognize_predictions = max(2, _safe_int(os.getenv("COMPREFACE_RECOGNIZE_PREDICTIONS", "5"), default=5))
+        recognize_predictions = max(2, _safe_int(os.getenv("COMPREFACE_RECOGNIZE_PREDICTIONS", "3"), default=3))
         recognize_det_prob = float(
             os.getenv("COMPREFACE_RECOGNIZE_DET_PROB", str(self._compreface.det_prob_threshold))
         )
@@ -775,6 +775,14 @@ class GestureStream:
                     out_by_idx[idx] = {"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0}
                 continue
 
+            adaptive_threshold = float(self._compreface.similarity_threshold)
+            min_face_side = min(bw, bh)
+            if min_face_side < 100:
+                adaptive_threshold -= 0.06
+            elif min_face_side < 140:
+                adaptive_threshold -= 0.03
+            adaptive_threshold = max(0.48, adaptive_threshold)
+
             xx1, yy1, xx2, yy2 = _expand_bbox((x1, y1, x2, y2), frame.shape, pad_ratio_x=0.28, pad_ratio_y=0.36)
             crop = frame[yy1:yy2, xx1:xx2]
             jpg = self._encode_crop_jpeg(crop)
@@ -784,28 +792,28 @@ class GestureStream:
                 prediction_count=recognize_predictions,
             )
 
-            # Fallback: еще более широкий кроп для случаев с частично обрезанным лицом.
-            xx1b, yy1b, xx2b, yy2b = _expand_bbox((x1, y1, x2, y2), frame.shape, pad_ratio_x=0.40, pad_ratio_y=0.52)
-            crop2 = frame[yy1b:yy2b, xx1b:xx2b]
-            jpg2 = self._encode_crop_jpeg(crop2)
-            candidates_wide = self._compreface.recognize_candidates(
-                jpg2,
-                det_prob_threshold=recognize_det_prob,
-                prediction_count=recognize_predictions,
+            # Wide crop is expensive (2nd network request); use it only when primary match is weak/empty.
+            top_primary_sim = float(candidates_primary[0][1]) if candidates_primary else 0.0
+            should_try_wide = (
+                not candidates_primary
+                or top_primary_sim < (adaptive_threshold + 0.02)
+                or min_face_side < 120
             )
+            candidates_wide: List[Tuple[str, float]] = []
+            if should_try_wide:
+                xx1b, yy1b, xx2b, yy2b = _expand_bbox((x1, y1, x2, y2), frame.shape, pad_ratio_x=0.40, pad_ratio_y=0.52)
+                crop2 = frame[yy1b:yy2b, xx1b:xx2b]
+                jpg2 = self._encode_crop_jpeg(crop2)
+                candidates_wide = self._compreface.recognize_candidates(
+                    jpg2,
+                    det_prob_threshold=recognize_det_prob,
+                    prediction_count=recognize_predictions,
+                )
             candidates = self._merge_candidates(candidates_primary, candidates_wide)
 
             pid: Optional[int] = None
             pname: Optional[str] = None
             simv = 0.0
-
-            adaptive_threshold = float(self._compreface.similarity_threshold)
-            min_face_side = min(bw, bh)
-            if min_face_side < 100:
-                adaptive_threshold -= 0.06
-            elif min_face_side < 140:
-                adaptive_threshold -= 0.03
-            adaptive_threshold = max(0.48, adaptive_threshold)
 
             mapped: List[Tuple[int, str, float]] = []
             for subject, similarity in candidates:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import re
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -833,7 +834,9 @@ async def _get_speech_asr_model() -> tuple[Optional[Any], Optional[str]]:
         try:
             from infrastructure.audio.faster_whisper_asr import FasterWhisperASR
 
-            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", "base"))
+            is_apple_silicon = platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
+            default_model = "tiny" if is_apple_silicon else "base"
+            model_size = os.getenv("SPEECH_LOG_ASR_MODEL", os.getenv("ASR_MODEL", default_model))
             language = os.getenv("SPEECH_LOG_ASR_LANGUAGE", os.getenv("ASR_LANGUAGE", "ru"))
             device = os.getenv("SPEECH_LOG_ASR_DEVICE", "cpu")
             compute_type = os.getenv("SPEECH_LOG_ASR_COMPUTE_TYPE", "int8")
@@ -950,7 +953,9 @@ async def video_start(
             return {"ok": True, "status": "already_running"}
 
         cam = int(os.getenv("CAMERA_INDEX", "0")) if camera_index is None else int(camera_index)
-        f = int(os.getenv("GESTURE_FPS", "30")) if fps is None else int(fps)  # 30fps for smooth rendering
+        is_apple_silicon = platform.system() == "Darwin" and platform.machine().lower() in {"arm64", "aarch64"}
+        default_fps = "24" if is_apple_silicon else "30"
+        f = int(os.getenv("GESTURE_FPS", default_fps)) if fps is None else int(fps)
         tyr = float(os.getenv("TABLE_Y_RATIO", "0.80")) if table_y_ratio is None else float(table_y_ratio)
         start_timeout_sec = float(os.getenv("VIDEO_START_TIMEOUT_SEC", "15"))
 

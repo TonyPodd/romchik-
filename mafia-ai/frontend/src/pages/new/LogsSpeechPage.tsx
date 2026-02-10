@@ -7,6 +7,8 @@ import './LogsSpeechPage.css';
 const TARGET_SAMPLE_RATE = 16000;
 const CHUNK_MS = 2400;
 const MAX_PENDING_CHUNKS = 4;
+const CLIENT_VAD_RMS_THRESHOLD = 0.008;
+const CLIENT_VAD_PEAK_THRESHOLD = 0.035;
 
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 
@@ -48,6 +50,22 @@ function concatFloat32(chunks: Float32Array[]): Float32Array {
   }
 
   return merged;
+}
+
+function audioEnergy(samples: Float32Array): { rms: number; peak: number } {
+  if (samples.length === 0) {
+    return { rms: 0, peak: 0 };
+  }
+  let sum = 0;
+  let peak = 0;
+  for (let i = 0; i < samples.length; i += 1) {
+    const v = Math.abs(samples[i]);
+    sum += v * v;
+    if (v > peak) {
+      peak = v;
+    }
+  }
+  return { rms: Math.sqrt(sum / samples.length), peak };
 }
 
 function mergeLogs(base: api.SpeechLogEntry[], incoming: api.SpeechLogEntry[]): api.SpeechLogEntry[] {
@@ -180,6 +198,10 @@ export function LogsSpeechPage() {
       if (normalized.length < TARGET_SAMPLE_RATE / 2) {
         return;
       }
+      const energy = audioEnergy(normalized);
+      if (energy.rms < CLIENT_VAD_RMS_THRESHOLD && energy.peak < CLIENT_VAD_PEAK_THRESHOLD) {
+        return;
+      }
 
       const response = await api.speechRecognizeChunk(Array.from(normalized), TARGET_SAMPLE_RATE, true);
       if (!response.ok) {
@@ -196,7 +218,12 @@ export function LogsSpeechPage() {
         setLogs((prev) => mergeLogs(prev, [response.entry!]));
       }
     } catch (chunkError: any) {
-      setError(chunkError?.message || 'Ошибка обработки аудио чанка');
+      const message = chunkError?.message || 'Ошибка обработки аудио чанка';
+      if (String(message).toLowerCase().includes('timeout')) {
+        setAsrWarning('ASR не успевает за потоком, пробую следующий чанк');
+        return;
+      }
+      setError(message);
     } finally {
       processInFlightRef.current = false;
       setProcessing(false);

@@ -44,7 +44,7 @@ class FasterWhisperASR:
         self.model_size = model_size
         self.device = device
         self.language = language
-        self.beam_size = max(1, int(os.getenv("SPEECH_LOG_ASR_BEAM_SIZE", os.getenv("ASR_BEAM_SIZE", "4"))))
+        self.beam_size = max(1, int(os.getenv("SPEECH_LOG_ASR_BEAM_SIZE", os.getenv("ASR_BEAM_SIZE", "2"))))
         self.best_of = max(1, int(os.getenv("SPEECH_LOG_ASR_BEST_OF", os.getenv("ASR_BEST_OF", str(self.beam_size)))))
         self.temperature = float(os.getenv("SPEECH_LOG_ASR_TEMPERATURE", os.getenv("ASR_TEMPERATURE", "0.0")))
         self.vad_threshold = float(os.getenv("SPEECH_LOG_ASR_VAD_THRESHOLD", "0.35"))
@@ -55,11 +55,8 @@ class FasterWhisperASR:
         self.no_speech_threshold = float(os.getenv("SPEECH_LOG_ASR_NO_SPEECH_THRESHOLD", "0.55"))
         self.log_prob_threshold = float(os.getenv("SPEECH_LOG_ASR_LOG_PROB_THRESHOLD", "-1.2"))
         self.compression_ratio_threshold = float(os.getenv("SPEECH_LOG_ASR_COMPRESSION_RATIO_THRESHOLD", "2.4"))
-        self.initial_prompt = os.getenv(
-            "SPEECH_LOG_ASR_INITIAL_PROMPT",
-            "Диалог игроков в мафию на русском языке. Используй обычную пунктуацию и без префиксов говорящих.",
-        )
-        self.retry_without_vad = os.getenv("SPEECH_LOG_ASR_RETRY_WITHOUT_VAD", "0").strip().lower() not in {"0", "false", "no"}
+        self.initial_prompt = os.getenv("SPEECH_LOG_ASR_INITIAL_PROMPT", "").strip()
+        self.retry_without_vad = os.getenv("SPEECH_LOG_ASR_RETRY_WITHOUT_VAD", "1").strip().lower() not in {"0", "false", "no"}
 
         # Загружаем модель
         self.model = WhisperModel(
@@ -100,27 +97,32 @@ class FasterWhisperASR:
             audio = audio / max(abs(audio.max()), abs(audio.min()))
 
         # Транскрипция
-        segments, info = self.model.transcribe(
-            audio,
-            language=language or self.language,
-            task=task,
-            beam_size=self.beam_size,
-            best_of=self.best_of,
-            temperature=self.temperature,
-            condition_on_previous_text=False,
-            initial_prompt=self.initial_prompt,
-            repetition_penalty=self.repetition_penalty,
-            no_repeat_ngram_size=self.no_repeat_ngram_size,
-            no_speech_threshold=self.no_speech_threshold,
-            log_prob_threshold=self.log_prob_threshold,
-            compression_ratio_threshold=self.compression_ratio_threshold,
-            without_timestamps=True,
-            vad_filter=True,  # Используем встроенный VAD
-            vad_parameters=dict(
+        transcribe_kwargs = {
+            "language": language or self.language,
+            "task": task,
+            "beam_size": self.beam_size,
+            "best_of": self.best_of,
+            "temperature": self.temperature,
+            "condition_on_previous_text": False,
+            "repetition_penalty": self.repetition_penalty,
+            "no_repeat_ngram_size": self.no_repeat_ngram_size,
+            "no_speech_threshold": self.no_speech_threshold,
+            "log_prob_threshold": self.log_prob_threshold,
+            "compression_ratio_threshold": self.compression_ratio_threshold,
+            "without_timestamps": True,
+            "vad_filter": True,
+            "vad_parameters": dict(
                 threshold=self.vad_threshold,
                 min_speech_duration_ms=self.vad_min_speech_ms,
                 min_silence_duration_ms=self.vad_min_silence_ms,
             ),
+        }
+        if self.initial_prompt:
+            transcribe_kwargs["initial_prompt"] = self.initial_prompt
+
+        segments, info = self.model.transcribe(
+            audio,
+            **transcribe_kwargs,
         )
 
         # Собираем текст и сегменты
@@ -141,22 +143,27 @@ class FasterWhisperASR:
 
         # На коротких чанках встроенный VAD иногда срезает полезную речь полностью.
         if self.retry_without_vad and not " ".join(full_text).strip():
+            retry_kwargs = {
+                "language": language or self.language,
+                "task": task,
+                "beam_size": max(self.beam_size, 6),
+                "best_of": max(self.best_of, 6),
+                "temperature": 0.0,
+                "condition_on_previous_text": False,
+                "repetition_penalty": self.repetition_penalty,
+                "no_repeat_ngram_size": self.no_repeat_ngram_size,
+                "no_speech_threshold": self.no_speech_threshold,
+                "log_prob_threshold": self.log_prob_threshold,
+                "compression_ratio_threshold": self.compression_ratio_threshold,
+                "without_timestamps": True,
+                "vad_filter": False,
+            }
+            if self.initial_prompt:
+                retry_kwargs["initial_prompt"] = self.initial_prompt
+
             segments, info = self.model.transcribe(
                 audio,
-                language=language or self.language,
-                task=task,
-                beam_size=max(self.beam_size, 6),
-                best_of=max(self.best_of, 6),
-                temperature=0.0,
-                condition_on_previous_text=False,
-                initial_prompt=self.initial_prompt,
-                repetition_penalty=self.repetition_penalty,
-                no_repeat_ngram_size=self.no_repeat_ngram_size,
-                no_speech_threshold=self.no_speech_threshold,
-                log_prob_threshold=self.log_prob_threshold,
-                compression_ratio_threshold=self.compression_ratio_threshold,
-                without_timestamps=True,
-                vad_filter=False,
+                **retry_kwargs,
             )
 
             full_text = []

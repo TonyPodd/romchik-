@@ -21,7 +21,8 @@ class CompreFaceClient:
         provider = (os.getenv("FACE_PROVIDER") or "").strip().upper()
         self.enabled = _env_bool("COMPREFACE_ENABLED", provider == "COMPREFACE")
         self.api_key = (os.getenv("COMPREFACE_API_KEY") or "").strip()
-        self.timeout_sec = float(os.getenv("COMPREFACE_TIMEOUT_SEC", "4.0"))
+        # Long network waits block video pipeline and tank FPS; keep tight default.
+        self.timeout_sec = float(os.getenv("COMPREFACE_TIMEOUT_SEC", "1.6"))
         self.similarity_threshold = float(os.getenv("COMPREFACE_SIMILARITY_THRESHOLD", "0.64"))
         self.det_prob_threshold = float(os.getenv("COMPREFACE_DET_PROB_THRESHOLD", "0.55"))
         self.enroll_det_prob_threshold = float(os.getenv("COMPREFACE_ENROLL_DET_PROB_THRESHOLD", "0.25"))
