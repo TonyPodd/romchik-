@@ -1194,6 +1194,12 @@ class GestureStream:
                             center: Tuple[int, int],
                             nearest_face_bbox: Optional[Tuple[int, int, int, int]],
                         ) -> str:
+                            if base_label == "unknown":
+                                # No face context yet: approximate with finger count to avoid noisy "unknown" in UI.
+                                if 1 <= int(fingers) <= 5:
+                                    return str(int(fingers))
+                                return "1"
+
                             if nearest_face_bbox is None:
                                 return base_label
                             x1, y1, x2, y2 = nearest_face_bbox
@@ -1220,6 +1226,17 @@ class GestureStream:
                                     return "think"
                                 if near_chest:
                                     return "self"
+
+                            if base_label == "unknown":
+                                # Face is visible but hand isn't classified confidently:
+                                # choose nearest semantic class instead of emitting "unknown".
+                                if near_head:
+                                    return "think"
+                                if near_chest:
+                                    return "self"
+                                if 1 <= int(fingers) <= 5:
+                                    return str(int(fingers))
+                                return "1"
                             return base_label
 
                         for hnd in res.hands:

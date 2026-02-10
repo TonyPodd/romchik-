@@ -106,6 +106,7 @@ function displayGestureLabel(raw: string): string {
     don: 'дон',
     think: 'думаю',
     self: 'я',
+    unknown: '1',
     jambo: 'Если',
     call_me: 'Если',
     call: 'Если',
