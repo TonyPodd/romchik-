@@ -314,6 +314,54 @@ class GestureDetector:
             return 5
         return 4
 
+    def _is_vertical_numeric_pose(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]], count: int) -> bool:
+        if count < 1 or count > 5:
+            return False
+
+        wrist = lm_px[0]
+        middle_mcp = lm_px[9]
+        palm = max(12.0, self._dist(wrist, middle_mcp))
+
+        # Numeric gestures are accepted only for a mostly vertical hand axis.
+        axis_dx = float(middle_mcp[0] - wrist[0])
+        axis_dy = float(middle_mcp[1] - wrist[1])
+        if abs(axis_dy) < (abs(axis_dx) * 1.10):
+            return False
+
+        finger_segments: List[Tuple[float, float]] = []
+        finger_pairs = {
+            "index": (6, 8),
+            "middle": (10, 12),
+            "ring": (14, 16),
+            "pinky": (18, 20),
+        }
+        for finger, (pip_i, tip_i) in finger_pairs.items():
+            if not bool(ext.get(finger, False)):
+                continue
+            pip = lm_px[pip_i]
+            tip = lm_px[tip_i]
+            finger_segments.append((float(tip[0] - pip[0]), float(tip[1] - pip[1])))
+
+        if not finger_segments:
+            return False
+
+        avg_abs_x = float(sum(abs(dx) for dx, _ in finger_segments)) / float(len(finger_segments))
+        avg_abs_y = float(sum(abs(dy) for _, dy in finger_segments)) / float(len(finger_segments))
+        if avg_abs_y < (avg_abs_x * 0.95):
+            return False
+
+        # Most raised fingers should point upward in frame space (towards smaller y).
+        up_votes = sum(1 for _, dy in finger_segments if dy < (-0.03 * palm))
+        if up_votes < max(1, len(finger_segments) - 1):
+            return False
+
+        # Extra guard for "1": index tip must be visually above wrist, otherwise it is likely self/think.
+        if count == 1 and bool(ext.get("index", False)):
+            if lm_px[8][1] >= (wrist[1] - 0.05 * palm):
+                return False
+
+        return True
+
     @staticmethod
     def _is_two_up_pose(ext: Dict[str, bool]) -> bool:
         return bool(ext["index"] and ext["middle"] and not ext["ring"] and not ext["pinky"])
@@ -353,8 +401,10 @@ class GestureDetector:
         if self._is_jambo(ext):
             return "jambo"
 
-        if 1 <= count <= 5:
+        if 1 <= count <= 5 and self._is_vertical_numeric_pose(ext, lm_px, count):
             return str(count)
+        if 1 <= count <= 5:
+            return "unknown"
         if count <= 0:
             return "unknown"
         return "unknown"
