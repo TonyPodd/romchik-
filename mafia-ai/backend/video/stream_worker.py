@@ -1252,9 +1252,11 @@ class GestureStream:
                             fh = max(1.0, float(y2 - y1))
                             cx, cy = center
 
+                            # Head/temple zone is intentionally wider than strict forehead bounds:
+                            # hand center is usually lower than fingertip, especially for "think".
                             near_head = (
-                                (x1 - 0.40 * fw) <= cx <= (x2 + 0.40 * fw)
-                                and (y1 - 0.45 * fh) <= cy <= (y1 + 0.25 * fh)
+                                (x1 - 0.85 * fw) <= cx <= (x2 + 0.85 * fw)
+                                and (y1 - 0.40 * fh) <= cy <= (y2 + 0.18 * fh)
                             )
                             near_chest = (
                                 (x1 - 0.65 * fw) <= cx <= (x2 + 0.65 * fw)
