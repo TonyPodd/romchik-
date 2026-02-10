@@ -266,11 +266,12 @@ class GestureDetector:
         return bool(ext["thumb"] and ext["pinky"] and not (ext["index"] or ext["middle"] or ext["ring"]))
 
     @staticmethod
-    def _is_only_index(ext: Dict[str, bool]) -> bool:
-        return bool(ext["index"] and not (ext["thumb"] or ext["middle"] or ext["ring"] or ext["pinky"]))
+    def _is_index_pointing(ext: Dict[str, bool]) -> bool:
+        # Allow thumb to be slightly open: in practice pointing is often shown as "1" with relaxed thumb.
+        return bool(ext["index"] and not (ext["middle"] or ext["ring"] or ext["pinky"]))
 
     def _is_self_point(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
-        if not self._is_only_index(ext):
+        if not self._is_index_pointing(ext):
             return False
         wrist = lm_px[0]
         idx_pip = lm_px[6]
@@ -355,7 +356,7 @@ class GestureDetector:
         if 1 <= count <= 5:
             return str(count)
         if count <= 0:
-            return "fist"
+            return "unknown"
         return "unknown"
 
     def process_frame(self, frame_bgr: np.ndarray) -> GestureResult:
@@ -415,7 +416,7 @@ class GestureDetector:
                 p_lm = pointer.get("lm_px")
                 if not isinstance(p_ext, dict) or not isinstance(p_lm, list):
                     continue
-                if not self._is_only_index(p_ext):
+                if not self._is_index_pointing(p_ext):
                     continue
                 p_tip = p_lm[8]
 

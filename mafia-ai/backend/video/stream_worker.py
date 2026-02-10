@@ -1185,11 +1185,12 @@ class GestureStream:
                             if gesture:
                                 return gesture, cnt
 
-                            fallback = {0: "fist", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5"}.get(cnt, "unknown")
+                            fallback = {1: "1", 2: "2", 3: "3", 4: "4", 5: "5"}.get(cnt, "unknown")
                             return fallback, cnt
 
                         def _contextual_label(
                             base_label: str,
+                            fingers: int,
                             center: Tuple[int, int],
                             nearest_face_bbox: Optional[Tuple[int, int, int, int]],
                         ) -> str:
@@ -1209,7 +1210,12 @@ class GestureStream:
                                 and (y2 - 0.05 * fh) <= cy <= (y2 + 1.30 * fh)
                             )
 
-                            if base_label == "1":
+                            # Strengthen "think/self": allow imperfect index detection (label 2 or unknown with few fingers).
+                            can_be_pointing = (
+                                base_label in {"1", "2"}
+                                or (base_label == "unknown" and 0 <= int(fingers) <= 2)
+                            )
+                            if can_be_pointing:
                                 if near_head:
                                     return "think"
                                 if near_chest:
@@ -1229,7 +1235,7 @@ class GestureStream:
                                 if isinstance(bb, tuple) and len(bb) == 4:
                                     nearest_face_bbox = bb
                             label, fingers = _label_for_hand(hnd)
-                            label = _contextual_label(label, hnd.center, nearest_face_bbox)
+                            label = _contextual_label(label, fingers, hnd.center, nearest_face_bbox)
                             hands_out.append({
                                 "bbox": hnd.bbox,
                                 "center": hnd.center,

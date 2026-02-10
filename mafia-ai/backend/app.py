@@ -421,7 +421,6 @@ def _normalize_gesture_token(raw: Any) -> Optional[str]:
         "ok_sign": "sheriff",
         "shot": "shot",
         "pistol": "shot",
-        "fist": "fist",
         "jambo": "if",
         "если": "if",
         "if": "if",
@@ -453,7 +452,6 @@ def _normalize_gesture_token(raw: Any) -> Optional[str]:
         "kill": "shot",
         "пистолет": "shot",
         "выстрел": "shot",
-        "кулак": "fist",
         "yes": "ok",
         "да": "ok",
         "ок": "ok",
@@ -468,7 +466,7 @@ def _gesture_token_priority(token: str) -> int:
         return 4
     if token.isdigit():
         return 3
-    if token in {"ok", "shot", "fist"}:
+    if token in {"ok", "shot"}:
         return 2
     return 1
 
@@ -519,8 +517,6 @@ def _gesture_token_to_text(token: str) -> str:
         return "OK"
     if token == "shot":
         return "выстрел"
-    if token == "fist":
-        return "кулак"
     return token
 
 
@@ -610,8 +606,8 @@ def _build_gesture_transcription(tokens: List[str]) -> Optional[str]:
         if not compact or compact[-1] != token:
             compact.append(token)
 
-    # Ignore pure "OK/fist" micro-events to avoid log noise.
-    informative = [t for t in compact if t not in {"ok", "fist"}]
+    # Ignore pure "OK" micro-events to avoid log noise.
+    informative = [t for t in compact if t not in {"ok"}]
     if not informative:
         return None
 
