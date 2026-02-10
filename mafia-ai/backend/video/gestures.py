@@ -265,6 +265,45 @@ class GestureDetector:
     def _is_jambo(ext: Dict[str, bool]) -> bool:
         return bool(ext["thumb"] and ext["pinky"] and not (ext["index"] or ext["middle"] or ext["ring"]))
 
+    @staticmethod
+    def _is_only_index(ext: Dict[str, bool]) -> bool:
+        return bool(ext["index"] and not (ext["thumb"] or ext["middle"] or ext["ring"] or ext["pinky"]))
+
+    @staticmethod
+    def _is_don_sign(ext: Dict[str, bool]) -> bool:
+        # "Рога": index + pinky (thumb may vary), middle/ring folded.
+        return bool(ext["index"] and ext["pinky"] and not (ext["middle"] or ext["ring"]))
+
+    @staticmethod
+    def _is_sheriff_sign(ext: Dict[str, bool]) -> bool:
+        # Index + thumb (L-shape), other fingers folded.
+        return bool(ext["index"] and ext["thumb"] and not (ext["middle"] or ext["ring"] or ext["pinky"]))
+
+    def _is_self_point(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
+        if not self._is_only_index(ext):
+            return False
+        wrist = lm_px[0]
+        idx_pip = lm_px[6]
+        idx_tip = lm_px[8]
+        palm = max(12.0, self._dist(wrist, lm_px[9]))
+        # Finger directed down toward chest and close to vertical body axis.
+        points_down = idx_tip[1] > (idx_pip[1] + 0.16 * palm)
+        near_axis = abs(float(idx_tip[0] - wrist[0])) < (0.55 * palm)
+        return bool(points_down and near_axis)
+
+    def _is_think_sign(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
+        if not self._is_only_index(ext):
+            return False
+        idx_mcp = lm_px[5]
+        idx_pip = lm_px[6]
+        idx_tip = lm_px[8]
+        wrist = lm_px[0]
+        palm = max(12.0, self._dist(wrist, lm_px[9]))
+        # "Think": index points up near head area with moderate bend.
+        points_up = idx_tip[1] < (idx_pip[1] - 0.12 * palm)
+        compact = self._dist(idx_tip, idx_mcp) < (1.45 * palm)
+        return bool(points_up and compact)
+
     def _numeric_count(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> int:
         # For numeric gestures we primarily count non-thumb fingers to avoid +1 bias.
         # Thumb contributes only for a clear open palm ("5").
@@ -320,6 +359,14 @@ class GestureDetector:
 
         if self._is_ok_sign(ext, lm_px):
             return "ok"
+        if self._is_don_sign(ext):
+            return "don"
+        if self._is_sheriff_sign(ext):
+            return "sheriff"
+        if self._is_self_point(ext, lm_px):
+            return "self"
+        if self._is_think_sign(ext, lm_px):
+            return "think"
         if self._is_thumb_up(ext, lm_px):
             return "thumb_up"
         if self._is_thumb_down(ext, lm_px):

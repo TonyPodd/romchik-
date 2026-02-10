@@ -427,6 +427,18 @@ def _normalize_gesture_token(raw: Any) -> Optional[str]:
         "if": "if",
         "call_me": "if",
         "call": "if",
+        "self": "self",
+        "myself": "self",
+        "me": "self",
+        "я": "self",
+        "think": "think",
+        "thinking": "think",
+        "думаю": "think",
+        "дон": "don",
+        "don": "don",
+        "godfather": "don",
+        "шериф": "sheriff",
+        "sheriff": "sheriff",
         "мафии": "mafia",
         "thumb_down": "mafia",
         "мафия": "mafia",
@@ -450,7 +462,9 @@ def _normalize_gesture_token(raw: Any) -> Optional[str]:
 
 
 def _gesture_token_priority(token: str) -> int:
-    if token in {"if", "mafia", "civil"}:
+    if token in {"if", "mafia", "civil", "don", "sheriff"}:
+        return 4
+    if token in {"self", "think"}:
         return 4
     if token.isdigit():
         return 3
@@ -479,6 +493,10 @@ def _role_word(role: str, count: int) -> str:
         return "мафия"
     if role == "civil":
         return "мирный" if count == 1 else "мирные"
+    if role == "don":
+        return "дон"
+    if role == "sheriff":
+        return "шериф"
     return role
 
 
@@ -489,6 +507,14 @@ def _gesture_token_to_text(token: str) -> str:
         return "мафия"
     if token == "civil":
         return "мирный"
+    if token == "don":
+        return "дон"
+    if token == "sheriff":
+        return "шериф"
+    if token == "self":
+        return "я"
+    if token == "think":
+        return "думаю"
     if token == "ok":
         return "OK"
     if token == "shot":
@@ -540,11 +566,37 @@ def _parse_gesture_role_clauses(tokens: List[str]) -> Tuple[List[Tuple[List[int]
         if not nums or i >= len(tokens):
             break
         role = tokens[i]
-        if role not in {"mafia", "civil"}:
+        if role not in {"mafia", "civil", "don", "sheriff"}:
             break
         clauses.append((nums, role))
         i += 1
     return clauses, i
+
+
+def _apply_gesture_prefix(prefix_tokens: List[str], phrase: str) -> str:
+    clean_phrase = str(phrase or "").strip()
+    if not prefix_tokens:
+        return clean_phrase
+
+    has_self = "self" in prefix_tokens
+    has_think = "think" in prefix_tokens
+    if not has_self and not has_think:
+        return clean_phrase
+    if not clean_phrase:
+        if has_self and has_think:
+            return "Я думаю."
+        if has_self:
+            return "Я."
+        return "Думаю."
+
+    lowered = clean_phrase[0].lower() + clean_phrase[1:] if clean_phrase else clean_phrase
+    if lowered.endswith("."):
+        lowered = lowered[:-1]
+    if has_self and has_think:
+        return f"Я думаю, {lowered}."
+    if has_self:
+        return f"Я {lowered}."
+    return f"Думаю, {lowered}."
 
 
 def _build_gesture_transcription(tokens: List[str]) -> Optional[str]:
@@ -563,9 +615,14 @@ def _build_gesture_transcription(tokens: List[str]) -> Optional[str]:
     if not informative:
         return None
 
-    if_idx = 1 if informative and informative[0] == "if" else 0
+    prefix_tokens: List[str] = [t for t in informative if t in {"self", "think"}]
+    core_tokens = [t for t in informative if t not in {"self", "think"}]
+    if not core_tokens and prefix_tokens:
+        return _apply_gesture_prefix(prefix_tokens, "")
+
+    if_idx = 1 if core_tokens and core_tokens[0] == "if" else 0
     with_if = if_idx == 1
-    core = informative[if_idx:]
+    core = core_tokens[if_idx:]
 
     # Shot template used in sports-mafia signaling.
     if "shot" in core:
@@ -588,8 +645,8 @@ def _build_gesture_transcription(tokens: List[str]) -> Optional[str]:
                     break
             shot_targets.reverse()
         if shot_targets:
-            return f"Стрелял в {_format_players_accusative(shot_targets)}."
-        return "Показан жест выстрела."
+            return _apply_gesture_prefix(prefix_tokens, f"Стрелял в {_format_players_accusative(shot_targets)}.")
+        return _apply_gesture_prefix(prefix_tokens, "Показан жест выстрела.")
 
     clauses, consumed = _parse_gesture_role_clauses(core)
     if clauses and consumed == len(core):
@@ -598,29 +655,31 @@ def _build_gesture_transcription(tokens: List[str]) -> Optional[str]:
             if with_if:
                 first = rendered[0]
                 if len(rendered) == 1:
-                    return f"Если {first}."
+                    return _apply_gesture_prefix(prefix_tokens, f"Если {first}.")
                 tail = rendered[1] if len(rendered) == 2 else "; ".join(rendered[1:])
-                return f"Если {first}, то {tail}."
+                return _apply_gesture_prefix(prefix_tokens, f"Если {first}, то {tail}.")
             if len(rendered) == 1:
-                return f"{rendered[0]}."
-            return f"{rendered[0]}; {', '.join(rendered[1:])}."
+                return _apply_gesture_prefix(prefix_tokens, f"{rendered[0]}.")
+            return _apply_gesture_prefix(prefix_tokens, f"{rendered[0]}; {', '.join(rendered[1:])}.")
 
     nums_only = [int(t) for t in core if t.isdigit() and 1 <= int(t) <= 10]
     if nums_only:
         ordinals = _format_ordinal_list(nums_only)
         if with_if:
-            return f"Если {ordinals}."
+            return _apply_gesture_prefix(prefix_tokens, f"Если {ordinals}.")
         if len(nums_only) == 1:
-            return f"Показан номер {nums_only[0]}."
-        return f"Показаны номера: {ordinals}."
+            return _apply_gesture_prefix(prefix_tokens, f"Показан номер {nums_only[0]}.")
+        return _apply_gesture_prefix(prefix_tokens, f"Показаны номера: {ordinals}.")
 
     words: List[str] = []
-    for token in informative:
+    for token in core_tokens:
         word = _gesture_token_to_text(token)
         if word:
             words.append(word)
     phrase = " ".join(words).strip()
-    return f"{phrase}." if phrase else None
+    if not phrase:
+        return _apply_gesture_prefix(prefix_tokens, "")
+    return _apply_gesture_prefix(prefix_tokens, f"{phrase}.")
 
 
 async def _append_gesture_transcript_log(speaker_id: int, text: str) -> None:

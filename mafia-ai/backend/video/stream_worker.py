@@ -1151,6 +1151,12 @@ class GestureStream:
                             return ((x1 + x2) // 2, (y1 + y2) // 2)
 
                         face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
+                        face_bbox_by_id: Dict[int, Tuple[int, int, int, int]] = {}
+                        for m in matches:
+                            mid = m.get("id")
+                            bb = m.get("bbox")
+                            if isinstance(mid, int) and mid > 0 and isinstance(bb, (tuple, list)) and len(bb) == 4:
+                                face_bbox_by_id[mid] = tuple(bb)
 
                         def _label_for_hand(h) -> Tuple[str, int]:
                             cnt_raw = getattr(h, "count", None)
@@ -1177,6 +1183,35 @@ class GestureStream:
                             fallback = {0: "fist", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5"}.get(cnt, "unknown")
                             return fallback, cnt
 
+                        def _contextual_label(base_label: str, owner_id: Optional[int], center: Tuple[int, int]) -> str:
+                            if not isinstance(owner_id, int) or owner_id <= 0:
+                                return base_label
+                            bb = face_bbox_by_id.get(owner_id)
+                            if bb is None:
+                                return base_label
+                            x1, y1, x2, y2 = bb
+                            fw = max(1.0, float(x2 - x1))
+                            fh = max(1.0, float(y2 - y1))
+                            cx, cy = center
+
+                            near_head = (
+                                (x1 - 0.40 * fw) <= cx <= (x2 + 0.40 * fw)
+                                and (y1 - 0.45 * fh) <= cy <= (y1 + 0.25 * fh)
+                            )
+                            near_chest = (
+                                (x1 - 0.65 * fw) <= cx <= (x2 + 0.65 * fw)
+                                and (y2 - 0.05 * fh) <= cy <= (y2 + 1.30 * fh)
+                            )
+
+                            if base_label == "1":
+                                if near_head:
+                                    return "think"
+                                if near_chest:
+                                    return "self"
+                            if base_label == "fist" and near_head:
+                                return "think"
+                            return base_label
+
                         for hnd in res.hands:
                             owner = None
                             if face_centers:
@@ -1185,6 +1220,7 @@ class GestureStream:
                                 dists.sort(key=lambda t: t[0])
                                 owner = dists[0][1]
                             label, fingers = _label_for_hand(hnd)
+                            label = _contextual_label(label, owner, hnd.center)
                             hands_out.append({
                                 "bbox": hnd.bbox,
                                 "center": hnd.center,
