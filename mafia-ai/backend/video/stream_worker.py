@@ -1150,13 +1150,18 @@ class GestureStream:
                             x1, y1, x2, y2 = bb
                             return ((x1 + x2) // 2, (y1 + y2) // 2)
 
-                        face_centers = [(m["id"], center_face(m["bbox"])) for m in matches]
-                        face_bbox_by_id: Dict[int, Tuple[int, int, int, int]] = {}
+                        face_rows: List[Dict[str, Any]] = []
                         for m in matches:
-                            mid = m.get("id")
                             bb = m.get("bbox")
-                            if isinstance(mid, int) and mid > 0 and isinstance(bb, (tuple, list)) and len(bb) == 4:
-                                face_bbox_by_id[mid] = tuple(bb)
+                            if not isinstance(bb, (tuple, list)) or len(bb) != 4:
+                                continue
+                            face_rows.append(
+                                {
+                                    "id": m.get("id"),
+                                    "bbox": tuple(bb),
+                                    "center": center_face(tuple(bb)),
+                                }
+                            )
 
                         def _label_for_hand(h) -> Tuple[str, int]:
                             cnt_raw = getattr(h, "count", None)
@@ -1183,13 +1188,14 @@ class GestureStream:
                             fallback = {0: "fist", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5"}.get(cnt, "unknown")
                             return fallback, cnt
 
-                        def _contextual_label(base_label: str, owner_id: Optional[int], center: Tuple[int, int]) -> str:
-                            if not isinstance(owner_id, int) or owner_id <= 0:
+                        def _contextual_label(
+                            base_label: str,
+                            center: Tuple[int, int],
+                            nearest_face_bbox: Optional[Tuple[int, int, int, int]],
+                        ) -> str:
+                            if nearest_face_bbox is None:
                                 return base_label
-                            bb = face_bbox_by_id.get(owner_id)
-                            if bb is None:
-                                return base_label
-                            x1, y1, x2, y2 = bb
+                            x1, y1, x2, y2 = nearest_face_bbox
                             fw = max(1.0, float(x2 - x1))
                             fh = max(1.0, float(y2 - y1))
                             cx, cy = center
@@ -1208,19 +1214,22 @@ class GestureStream:
                                     return "think"
                                 if near_chest:
                                     return "self"
-                            if base_label == "fist" and near_head:
-                                return "think"
                             return base_label
 
                         for hnd in res.hands:
                             owner = None
-                            if face_centers:
+                            nearest_face_bbox: Optional[Tuple[int, int, int, int]] = None
+                            if face_rows:
                                 cx, cy = hnd.center
-                                dists = [((cx - fc[1][0]) ** 2 + (cy - fc[1][1]) ** 2, fc[0]) for fc in face_centers]
+                                dists = [((cx - row["center"][0]) ** 2 + (cy - row["center"][1]) ** 2, row) for row in face_rows]
                                 dists.sort(key=lambda t: t[0])
-                                owner = dists[0][1]
+                                nearest = dists[0][1]
+                                owner = nearest.get("id")
+                                bb = nearest.get("bbox")
+                                if isinstance(bb, tuple) and len(bb) == 4:
+                                    nearest_face_bbox = bb
                             label, fingers = _label_for_hand(hnd)
-                            label = _contextual_label(label, owner, hnd.center)
+                            label = _contextual_label(label, hnd.center, nearest_face_bbox)
                             hands_out.append({
                                 "bbox": hnd.bbox,
                                 "center": hnd.center,

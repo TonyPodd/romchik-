@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -269,16 +269,6 @@ class GestureDetector:
     def _is_only_index(ext: Dict[str, bool]) -> bool:
         return bool(ext["index"] and not (ext["thumb"] or ext["middle"] or ext["ring"] or ext["pinky"]))
 
-    @staticmethod
-    def _is_don_sign(ext: Dict[str, bool]) -> bool:
-        # "Рога": index + pinky (thumb may vary), middle/ring folded.
-        return bool(ext["index"] and ext["pinky"] and not (ext["middle"] or ext["ring"]))
-
-    @staticmethod
-    def _is_sheriff_sign(ext: Dict[str, bool]) -> bool:
-        # Index + thumb (L-shape), other fingers folded.
-        return bool(ext["index"] and ext["thumb"] and not (ext["middle"] or ext["ring"] or ext["pinky"]))
-
     def _is_self_point(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
         if not self._is_only_index(ext):
             return False
@@ -291,18 +281,11 @@ class GestureDetector:
         near_axis = abs(float(idx_tip[0] - wrist[0])) < (0.55 * palm)
         return bool(points_down and near_axis)
 
-    def _is_think_sign(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> bool:
-        if not self._is_only_index(ext):
+    @staticmethod
+    def _is_open_palm(ext: Dict[str, bool], count: int) -> bool:
+        if count < 4:
             return False
-        idx_mcp = lm_px[5]
-        idx_pip = lm_px[6]
-        idx_tip = lm_px[8]
-        wrist = lm_px[0]
-        palm = max(12.0, self._dist(wrist, lm_px[9]))
-        # "Think": index points up near head area with moderate bend.
-        points_up = idx_tip[1] < (idx_pip[1] - 0.12 * palm)
-        compact = self._dist(idx_tip, idx_mcp) < (1.45 * palm)
-        return bool(points_up and compact)
+        return bool(ext["index"] and ext["middle"] and ext["ring"] and ext["pinky"])
 
     def _numeric_count(self, ext: Dict[str, bool], lm_px: List[Tuple[int, int]]) -> int:
         # For numeric gestures we primarily count non-thumb fingers to avoid +1 bias.
@@ -358,15 +341,10 @@ class GestureDetector:
             return "shot"
 
         if self._is_ok_sign(ext, lm_px):
-            return "ok"
-        if self._is_don_sign(ext):
-            return "don"
-        if self._is_sheriff_sign(ext):
+            # По правилам этого проекта "OK" = шериф.
             return "sheriff"
         if self._is_self_point(ext, lm_px):
             return "self"
-        if self._is_think_sign(ext, lm_px):
-            return "think"
         if self._is_thumb_up(ext, lm_px):
             return "thumb_up"
         if self._is_thumb_down(ext, lm_px):
@@ -388,6 +366,7 @@ class GestureDetector:
         now = time.time()
         used_track_ids: set[int] = set()
         hands_out: List[HandInfo] = []
+        hands_meta: List[Dict[str, Any]] = []
 
         if res.multi_hand_landmarks and res.multi_handedness:
             for lms, handedness in zip(res.multi_hand_landmarks, res.multi_handedness):
@@ -421,6 +400,55 @@ class GestureDetector:
                         gesture=gesture,
                     )
                 )
+                hands_meta.append(
+                    {
+                        "index": len(hands_out) - 1,
+                        "lm_px": lm_px,
+                        "ext": ext,
+                        "count": count,
+                    }
+                )
+
+            # "Дон": открытая ладонь + указательный палец второй руки на безымянный палец ладони.
+            for pointer in hands_meta:
+                p_ext = pointer.get("ext")
+                p_lm = pointer.get("lm_px")
+                if not isinstance(p_ext, dict) or not isinstance(p_lm, list):
+                    continue
+                if not self._is_only_index(p_ext):
+                    continue
+                p_tip = p_lm[8]
+
+                for palm in hands_meta:
+                    if palm["index"] == pointer["index"]:
+                        continue
+                    b_ext = palm.get("ext")
+                    b_lm = palm.get("lm_px")
+                    b_count = int(palm.get("count", 0))
+                    if not isinstance(b_ext, dict) or not isinstance(b_lm, list):
+                        continue
+                    if not self._is_open_palm(b_ext, b_count):
+                        continue
+
+                    base_palm = max(12.0, self._dist(b_lm[0], b_lm[9]))
+                    ring_mcp = b_lm[13]
+                    ring_pip = b_lm[14]
+                    ring_tip = b_lm[16]
+                    near_ring = (
+                        self._dist(p_tip, ring_mcp) <= (0.78 * base_palm)
+                        or self._dist(p_tip, ring_pip) <= (0.74 * base_palm)
+                        or self._dist(p_tip, ring_tip) <= (0.68 * base_palm)
+                    )
+                    if not near_ring:
+                        continue
+
+                    pointer_center = hands_out[pointer["index"]].center
+                    palm_center = hands_out[palm["index"]].center
+                    if self._dist(pointer_center, palm_center) > (2.7 * base_palm):
+                        continue
+
+                    hands_out[pointer["index"]].gesture = "don"
+                    break
 
         self._cleanup_tracks(now)
 

@@ -100,8 +100,12 @@ function displayGestureLabel(raw: string): string {
     like: 'мирный',
     thumb_down: 'мафия',
     dislike: 'мафия',
-    ok: 'OK',
-    ok_sign: 'OK',
+    ok: 'шериф',
+    ok_sign: 'шериф',
+    sheriff: 'шериф',
+    don: 'дон',
+    think: 'думаю',
+    self: 'я',
     jambo: 'Если',
     call_me: 'Если',
     call: 'Если',
@@ -451,4 +455,3 @@ export function GameProcessPage() {
     </div>
   );
 }
-
