@@ -1150,18 +1150,64 @@ class GestureStream:
                             x1, y1, x2, y2 = bb
                             return ((x1 + x2) // 2, (y1 + y2) // 2)
 
+                        def _iou(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> float:
+                            ax1, ay1, ax2, ay2 = a
+                            bx1, by1, bx2, by2 = b
+                            ix1 = max(ax1, bx1)
+                            iy1 = max(ay1, by1)
+                            ix2 = min(ax2, bx2)
+                            iy2 = min(ay2, by2)
+                            iw = max(0.0, float(ix2 - ix1))
+                            ih = max(0.0, float(iy2 - iy1))
+                            inter = iw * ih
+                            if inter <= 0.0:
+                                return 0.0
+                            area_a = max(0.0, float(ax2 - ax1)) * max(0.0, float(ay2 - ay1))
+                            area_b = max(0.0, float(bx2 - bx1)) * max(0.0, float(by2 - by1))
+                            denom = area_a + area_b - inter
+                            if denom <= 1e-6:
+                                return 0.0
+                            return inter / denom
+
                         face_rows: List[Dict[str, Any]] = []
+                        for f in faces:
+                            bb = f.get("bbox")
+                            if not isinstance(bb, (tuple, list)) or len(bb) != 4:
+                                continue
+                            bbt = tuple(int(v) for v in bb)
+                            face_rows.append(
+                                {
+                                    "id": None,
+                                    "bbox": bbt,
+                                    "center": center_face(bbt),
+                                }
+                            )
+
                         for m in matches:
                             bb = m.get("bbox")
                             if not isinstance(bb, (tuple, list)) or len(bb) != 4:
                                 continue
-                            face_rows.append(
-                                {
-                                    "id": m.get("id"),
-                                    "bbox": tuple(bb),
-                                    "center": center_face(tuple(bb)),
-                                }
-                            )
+                            match_bb = tuple(int(v) for v in bb)
+                            best_idx = -1
+                            best_iou = 0.0
+                            for idx, row in enumerate(face_rows):
+                                row_bb = row.get("bbox")
+                                if not isinstance(row_bb, tuple) or len(row_bb) != 4:
+                                    continue
+                                iou = _iou(match_bb, row_bb)
+                                if iou > best_iou:
+                                    best_iou = iou
+                                    best_idx = idx
+                            if best_idx >= 0 and best_iou >= 0.20:
+                                face_rows[best_idx]["id"] = m.get("id")
+                            else:
+                                face_rows.append(
+                                    {
+                                        "id": m.get("id"),
+                                        "bbox": match_bb,
+                                        "center": center_face(match_bb),
+                                    }
+                                )
 
                         def _label_for_hand(h) -> Tuple[str, int]:
                             cnt_raw = getattr(h, "count", None)
@@ -1194,13 +1240,12 @@ class GestureStream:
                             center: Tuple[int, int],
                             nearest_face_bbox: Optional[Tuple[int, int, int, int]],
                         ) -> str:
-                            if base_label == "unknown":
-                                # No face context yet: approximate with finger count to avoid noisy "unknown" in UI.
-                                if 1 <= int(fingers) <= 5:
-                                    return str(int(fingers))
-                                return "1"
-
                             if nearest_face_bbox is None:
+                                if base_label == "unknown":
+                                    # No face context: fall back to finger-count approximation.
+                                    if 1 <= int(fingers) <= 5:
+                                        return str(int(fingers))
+                                    return "1"
                                 return base_label
                             x1, y1, x2, y2 = nearest_face_bbox
                             fw = max(1.0, float(x2 - x1))
