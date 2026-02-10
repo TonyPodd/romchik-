@@ -22,8 +22,8 @@ class CompreFaceClient:
         self.enabled = _env_bool("COMPREFACE_ENABLED", provider == "COMPREFACE")
         self.api_key = (os.getenv("COMPREFACE_API_KEY") or "").strip()
         self.timeout_sec = float(os.getenv("COMPREFACE_TIMEOUT_SEC", "4.0"))
-        self.similarity_threshold = float(os.getenv("COMPREFACE_SIMILARITY_THRESHOLD", "0.72"))
-        self.det_prob_threshold = float(os.getenv("COMPREFACE_DET_PROB_THRESHOLD", "0.7"))
+        self.similarity_threshold = float(os.getenv("COMPREFACE_SIMILARITY_THRESHOLD", "0.64"))
+        self.det_prob_threshold = float(os.getenv("COMPREFACE_DET_PROB_THRESHOLD", "0.55"))
         self.enroll_det_prob_threshold = float(os.getenv("COMPREFACE_ENROLL_DET_PROB_THRESHOLD", "0.25"))
         self.enroll_max_variants = max(1, int(os.getenv("COMPREFACE_ENROLL_MAX_VARIANTS", "6")))
         self.prediction_count = int(os.getenv("COMPREFACE_PREDICTION_COUNT", "3"))
@@ -105,23 +105,17 @@ class CompreFaceClient:
             return {"ok": False, "error": str(e)}
 
     def recognize_best(self, image_bytes: bytes) -> Tuple[Optional[str], float]:
-        if not image_bytes:
+        candidates = self.recognize_candidates(image_bytes)
+        if not candidates:
             return None, 0.0
-        try:
-            data = self._request_json(
-                "POST",
-                self.recognize_url,
-                params={
-                    "prediction_count": self.prediction_count,
-                    "det_prob_threshold": self.det_prob_threshold,
-                },
-                files={"file": ("frame.jpg", image_bytes, "image/jpeg")},
-            )
-        except Exception:
-            return None, 0.0
+        best_subject, best_similarity = candidates[0]
+        if best_similarity < self.similarity_threshold:
+            return None, best_similarity
+        return best_subject, best_similarity
 
-        best_subject: Optional[str] = None
-        best_similarity = 0.0
+    @staticmethod
+    def _extract_subject_candidates(data: Dict[str, Any]) -> List[Tuple[str, float]]:
+        scored: Dict[str, float] = {}
         for face in data.get("result") or []:
             subjects = face.get("subjects") or []
             for subj in subjects:
@@ -129,15 +123,36 @@ class CompreFaceClient:
                 if not isinstance(subject, str) or not subject:
                     continue
                 similarity = float(subj.get("similarity", 0.0))
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_subject = subject
+                prev = scored.get(subject)
+                if prev is None or similarity > prev:
+                    scored[subject] = similarity
+        ordered = sorted(scored.items(), key=lambda kv: kv[1], reverse=True)
+        return [(str(subj), float(sim)) for subj, sim in ordered]
 
-        if best_subject is None:
-            return None, 0.0
-        if best_similarity < self.similarity_threshold:
-            return None, best_similarity
-        return best_subject, best_similarity
+    def recognize_candidates(
+        self,
+        image_bytes: bytes,
+        *,
+        det_prob_threshold: Optional[float] = None,
+        prediction_count: Optional[int] = None,
+    ) -> List[Tuple[str, float]]:
+        if not image_bytes:
+            return []
+        threshold = self.det_prob_threshold if det_prob_threshold is None else float(det_prob_threshold)
+        pred_count = self.prediction_count if prediction_count is None else max(1, int(prediction_count))
+        try:
+            data = self._request_json(
+                "POST",
+                self.recognize_url,
+                params={
+                    "prediction_count": pred_count,
+                    "det_prob_threshold": threshold,
+                },
+                files={"file": ("frame.jpg", image_bytes, "image/jpeg")},
+            )
+        except Exception:
+            return []
+        return self._extract_subject_candidates(data)
 
     @staticmethod
     def _extract_compreface_error(data: Dict[str, Any]) -> Optional[str]:

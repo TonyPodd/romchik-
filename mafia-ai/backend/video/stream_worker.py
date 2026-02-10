@@ -640,16 +640,51 @@ class GestureStream:
             return subject.strip()
         return self._compreface.subject_for_player(pid)
 
+    def _player_from_subject(
+        self,
+        subject: str,
+        by_subject: Dict[str, Dict[str, Any]],
+        by_id: Dict[int, Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not subject:
+            return None
+        direct = by_subject.get(subject)
+        if direct is not None:
+            return direct
+        prefix = str(getattr(self._compreface, "subject_prefix", "") or "")
+        if prefix and subject.startswith(prefix):
+            tail = subject[len(prefix):].strip()
+            if tail.isdigit():
+                return by_id.get(int(tail))
+        return None
+
+    @staticmethod
+    def _merge_candidates(
+        primary: List[Tuple[str, float]],
+        secondary: List[Tuple[str, float]],
+    ) -> List[Tuple[str, float]]:
+        merged: Dict[str, float] = {}
+        for subject, sim in primary + secondary:
+            if not subject:
+                continue
+            prev = merged.get(subject)
+            if prev is None or sim > prev:
+                merged[subject] = float(sim)
+        return sorted(merged.items(), key=lambda item: item[1], reverse=True)
+
     def _match_faces_compreface(self, frame: np.ndarray, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         reg = P.list_players()
-        out: List[Dict[str, Any]] = []
         if not faces:
-            return out
+            return []
         if not reg:
             return [{"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0} for f in faces]
 
         by_subject: Dict[str, Dict[str, Any]] = {}
+        by_id: Dict[int, Dict[str, Any]] = {}
         for p in reg:
+            pid = _safe_int(p.get("id"), 0)
+            if pid > 0:
+                by_id[pid] = p
             subject = self._subject_from_player(p)
             if subject:
                 by_subject[subject] = p
@@ -660,7 +695,23 @@ class GestureStream:
             if now - float(row.get("last_seen", 0.0)) <= self._compreface_cache_ttl_sec
         ]
 
-        for f in faces:
+        indexed_faces: List[Tuple[int, Dict[str, Any]]] = list(enumerate(faces))
+        indexed_faces.sort(
+            key=lambda row: max(1, (row[1]["bbox"][2] - row[1]["bbox"][0]) * (row[1]["bbox"][3] - row[1]["bbox"][1])),
+            reverse=True,
+        )
+
+        out_by_idx: Dict[int, Dict[str, Any]] = {}
+        used_pids: set[int] = set()
+        used_cache_indices: set[int] = set()
+        margin_high = float(os.getenv("COMPREFACE_SECOND_BEST_MARGIN", "0.055"))
+        margin_low = float(os.getenv("COMPREFACE_SECOND_BEST_MARGIN_LOW_CONF", "0.035"))
+        recognize_predictions = max(2, _safe_int(os.getenv("COMPREFACE_RECOGNIZE_PREDICTIONS", "5"), default=5))
+        recognize_det_prob = float(
+            os.getenv("COMPREFACE_RECOGNIZE_DET_PROB", str(self._compreface.det_prob_threshold))
+        )
+
+        for idx, f in indexed_faces:
             x1, y1, x2, y2 = f["bbox"]
             bw = max(1, x2 - x1)
             bh = max(1, y2 - y1)
@@ -669,10 +720,13 @@ class GestureStream:
             cy = int((y1 + y2) * 0.5)
 
             cache_row: Optional[Dict[str, Any]] = None
+            cache_index: Optional[int] = None
             best_dist2: Optional[float] = None
             max_dist = max(42.0, diag * 0.55)
             max_dist2 = max_dist * max_dist
-            for row in self._compreface_face_cache:
+            for row_idx, row in enumerate(self._compreface_face_cache):
+                if row_idx in used_cache_indices:
+                    continue
                 dx = float(cx - _safe_int(row.get("cx"), 0))
                 dy = float(cy - _safe_int(row.get("cy"), 0))
                 dist2 = dx * dx + dy * dy
@@ -681,56 +735,107 @@ class GestureStream:
                 if best_dist2 is None or dist2 < best_dist2:
                     best_dist2 = dist2
                     cache_row = row
+                    cache_index = row_idx
 
             if cache_row is not None:
                 cache_row["cx"] = cx
                 cache_row["cy"] = cy
                 cache_row["last_seen"] = now
-                if now - float(cache_row.get("recognized_at", 0.0)) < self._compreface_match_interval_sec:
-                    out.append({
+                cached_pid = _safe_int(cache_row.get("pid"), 0)
+                cached_pid_opt = cached_pid if cached_pid > 0 else None
+                if (
+                    now - float(cache_row.get("recognized_at", 0.0)) < self._compreface_match_interval_sec
+                    and (cached_pid_opt is None or cached_pid_opt not in used_pids)
+                ):
+                    if cached_pid_opt is not None:
+                        used_pids.add(cached_pid_opt)
+                    if cache_index is not None:
+                        used_cache_indices.add(cache_index)
+                    out_by_idx[idx] = {
                         "bbox": f["bbox"],
-                        "id": cache_row.get("pid"),
+                        "id": cached_pid_opt,
                         "name": cache_row.get("name"),
                         "sim": float(cache_row.get("sim", 0.0)),
-                    })
+                    }
                     continue
 
             if min(bw, bh) < self._compreface_min_face_size:
                 if cache_row is not None:
-                    out.append({
+                    cached_pid = _safe_int(cache_row.get("pid"), 0)
+                    cached_pid_opt = cached_pid if cached_pid > 0 and cached_pid not in used_pids else None
+                    if cached_pid_opt is not None:
+                        used_pids.add(cached_pid_opt)
+                    out_by_idx[idx] = {
                         "bbox": f["bbox"],
-                        "id": cache_row.get("pid"),
-                        "name": cache_row.get("name"),
+                        "id": cached_pid_opt,
+                        "name": cache_row.get("name") if cached_pid_opt is not None else None,
                         "sim": float(cache_row.get("sim", 0.0)),
-                    })
+                    }
                 else:
-                    out.append({"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0})
+                    out_by_idx[idx] = {"bbox": f["bbox"], "id": None, "name": None, "sim": 0.0}
                 continue
 
             xx1, yy1, xx2, yy2 = _expand_bbox((x1, y1, x2, y2), frame.shape, pad_ratio_x=0.28, pad_ratio_y=0.36)
             crop = frame[yy1:yy2, xx1:xx2]
             jpg = self._encode_crop_jpeg(crop)
-            subject, simv = self._compreface.recognize_best(jpg)
+            candidates_primary = self._compreface.recognize_candidates(
+                jpg,
+                det_prob_threshold=recognize_det_prob,
+                prediction_count=recognize_predictions,
+            )
 
             # Fallback: еще более широкий кроп для случаев с частично обрезанным лицом.
-            if subject is None:
-                xx1b, yy1b, xx2b, yy2b = _expand_bbox((x1, y1, x2, y2), frame.shape, pad_ratio_x=0.40, pad_ratio_y=0.52)
-                crop2 = frame[yy1b:yy2b, xx1b:xx2b]
-                jpg2 = self._encode_crop_jpeg(crop2)
-                subject2, simv2 = self._compreface.recognize_best(jpg2)
-                if subject2 is not None or simv2 > simv:
-                    subject, simv = subject2, simv2
+            xx1b, yy1b, xx2b, yy2b = _expand_bbox((x1, y1, x2, y2), frame.shape, pad_ratio_x=0.40, pad_ratio_y=0.52)
+            crop2 = frame[yy1b:yy2b, xx1b:xx2b]
+            jpg2 = self._encode_crop_jpeg(crop2)
+            candidates_wide = self._compreface.recognize_candidates(
+                jpg2,
+                det_prob_threshold=recognize_det_prob,
+                prediction_count=recognize_predictions,
+            )
+            candidates = self._merge_candidates(candidates_primary, candidates_wide)
 
             pid: Optional[int] = None
             pname: Optional[str] = None
-            if subject and subject in by_subject:
-                p = by_subject[subject]
-                pid = int(p.get("id")) if p.get("id") is not None else None
-                pname = p.get("name") or (f"Player {pid}" if pid is not None else None)
+            simv = 0.0
+
+            adaptive_threshold = float(self._compreface.similarity_threshold)
+            min_face_side = min(bw, bh)
+            if min_face_side < 100:
+                adaptive_threshold -= 0.06
+            elif min_face_side < 140:
+                adaptive_threshold -= 0.03
+            adaptive_threshold = max(0.48, adaptive_threshold)
+
+            mapped: List[Tuple[int, str, float]] = []
+            for subject, similarity in candidates:
+                player = self._player_from_subject(subject, by_subject, by_id)
+                if player is None:
+                    continue
+                cand_pid = _safe_int(player.get("id"), 0)
+                if cand_pid <= 0 or cand_pid in used_pids:
+                    continue
+                cand_name = str(player.get("name") or f"Player {cand_pid}")
+                mapped.append((cand_pid, cand_name, float(similarity)))
+
+            if mapped:
+                top_pid, top_name, top_sim = mapped[0]
+                second_sim = mapped[1][2] if len(mapped) > 1 else 0.0
+                margin = margin_high if top_sim >= (adaptive_threshold + 0.08) else margin_low
+                if top_sim >= adaptive_threshold and (len(mapped) == 1 or (top_sim - second_sim) >= margin):
+                    pid = top_pid
+                    pname = top_name
+                    simv = top_sim
+                    used_pids.add(pid)
+                else:
+                    simv = top_sim
+            elif candidates:
+                simv = float(candidates[0][1])
 
             if cache_row is None:
                 cache_row = {}
                 self._compreface_face_cache.append(cache_row)
+                cache_index = len(self._compreface_face_cache) - 1
             cache_row.update(
                 {
                     "cx": cx,
@@ -742,7 +847,13 @@ class GestureStream:
                     "recognized_at": now,
                 }
             )
-            out.append({"bbox": f["bbox"], "id": pid, "name": pname, "sim": float(simv)})
+            if cache_index is not None:
+                used_cache_indices.add(cache_index)
+            out_by_idx[idx] = {"bbox": f["bbox"], "id": pid, "name": pname, "sim": float(simv)}
+
+        out: List[Dict[str, Any]] = []
+        for i, face in enumerate(faces):
+            out.append(out_by_idx.get(i, {"bbox": face["bbox"], "id": None, "name": None, "sim": 0.0}))
         return out
 
     def _match_faces_legacy(self, frame: np.ndarray, faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

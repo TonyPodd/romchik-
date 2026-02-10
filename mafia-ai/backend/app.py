@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -355,6 +356,49 @@ def _speech_line(label: str, text: str, kind: str = "speech_text") -> str:
     return f"\"{label}\"(текст): {clean_text};"
 
 
+def _normalize_text_for_compare(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    return value.strip(" \t\r\n\"'`")
+
+
+def _is_placeholder_speech_text(text: str) -> bool:
+    normalized = _normalize_text_for_compare(text)
+    if not normalized:
+        return True
+
+    if not re.search(r"[a-zа-я0-9]", normalized):
+        return True
+
+    known = {
+        "диалог игроков в мафию",
+        "dialog igrokov v mafiyu",
+        "thanks for watching",
+        "thank you for watching",
+        "спасибо за просмотр",
+        "подписывайтесь на канал",
+        "до новых встреч",
+        "субтитры сделал dima t",
+    }
+    if normalized in known:
+        return True
+
+    for phrase in ("диалог игроков в мафию", "thanks for watching", "спасибо за просмотр"):
+        if phrase in normalized and len(normalized) <= 96:
+            return True
+
+    tokens = [t for t in re.split(r"\s+", normalized) if t]
+    if len(tokens) >= 4 and len(set(tokens)) <= 1:
+        return True
+    return False
+
+
+def _sanitize_speech_text(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+    if _is_placeholder_speech_text(cleaned):
+        return ""
+    return cleaned
+
+
 def _normalize_gesture_token(raw: Any) -> Optional[str]:
     value = str(raw or "").strip().lower()
     if not value:
@@ -391,6 +435,15 @@ def _normalize_gesture_token(raw: Any) -> Optional[str]:
         "мирный": "civil",
         "civil": "civil",
         "peaceful": "civil",
+        "peace": "civil",
+        "shoot": "shot",
+        "kill": "shot",
+        "пистолет": "shot",
+        "выстрел": "shot",
+        "кулак": "fist",
+        "yes": "ok",
+        "да": "ok",
+        "ок": "ok",
     }
     return aliases.get(value)
 
@@ -422,7 +475,7 @@ def _format_ordinal_list(nums: List[int]) -> str:
 
 def _role_word(role: str, count: int) -> str:
     if role == "mafia":
-        return "мафия" if count == 1 else "мафии"
+        return "мафия"
     if role == "civil":
         return "мирный" if count == 1 else "мирные"
     return role
@@ -444,53 +497,129 @@ def _gesture_token_to_text(token: str) -> str:
     return token
 
 
+def _dedupe_in_order(nums: List[int]) -> List[int]:
+    out: List[int] = []
+    for n in nums:
+        if n not in out:
+            out.append(n)
+    return out
+
+
+def _format_players_accusative(nums: List[int]) -> str:
+    uniq = _dedupe_in_order(nums)
+    labels = [f"{n}-го" for n in uniq]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return f"{labels[0]} игрока"
+    if len(labels) == 2:
+        return f"{labels[0]} и {labels[1]} игроков"
+    return f"{', '.join(labels[:-1])} и {labels[-1]} игроков"
+
+
+def _render_gesture_clause(nums: List[int], role: str) -> str:
+    ordinals = _format_ordinal_list(nums)
+    if not ordinals:
+        return ""
+    if len(nums) == 1:
+        return f"{ordinals} игрок — {_role_word(role, 1)}"
+    return f"{ordinals} игроки — {_role_word(role, len(nums))}"
+
+
+def _parse_gesture_role_clauses(tokens: List[str]) -> Tuple[List[Tuple[List[int], str]], int]:
+    clauses: List[Tuple[List[int], str]] = []
+    i = 0
+    while i < len(tokens):
+        nums: List[int] = []
+        while i < len(tokens) and tokens[i].isdigit():
+            n = int(tokens[i])
+            if 1 <= n <= 10 and n not in nums:
+                nums.append(n)
+            i += 1
+        if not nums or i >= len(tokens):
+            break
+        role = tokens[i]
+        if role not in {"mafia", "civil"}:
+            break
+        clauses.append((nums, role))
+        i += 1
+    return clauses, i
+
+
 def _build_gesture_transcription(tokens: List[str]) -> Optional[str]:
     clean = [str(t).strip().lower() for t in tokens if str(t).strip()]
     if not clean:
         return None
 
-    # Preferred grammar: [if] <num...> <mafia|civil> [<num...> <mafia|civil> ...]
-    i = 1 if clean and clean[0] == "if" else 0
-    with_if = i == 1
-    grammar_ok = True
-    groups: List[Tuple[List[int], str]] = []
-    while i < len(clean):
-        nums: List[int] = []
-        while i < len(clean) and clean[i].isdigit():
-            n = int(clean[i])
-            if 1 <= n <= 10:
-                nums.append(n)
-                i += 1
+    # Collapse consecutive duplicates, but keep sequence order.
+    compact: List[str] = []
+    for token in clean:
+        if not compact or compact[-1] != token:
+            compact.append(token)
+
+    # Ignore pure "OK/fist" micro-events to avoid log noise.
+    informative = [t for t in compact if t not in {"ok", "fist"}]
+    if not informative:
+        return None
+
+    if_idx = 1 if informative and informative[0] == "if" else 0
+    with_if = if_idx == 1
+    core = informative[if_idx:]
+
+    # Shot template used in sports-mafia signaling.
+    if "shot" in core:
+        shot_i = core.index("shot")
+        shot_targets: List[int] = []
+        for t in core[shot_i + 1 :]:
+            if t.isdigit():
+                n = int(t)
+                if 1 <= n <= 10 and n not in shot_targets:
+                    shot_targets.append(n)
             else:
-                grammar_ok = False
                 break
-        if not nums or i >= len(clean):
-            grammar_ok = False
-            break
-        role = clean[i]
-        if role not in {"mafia", "civil"}:
-            grammar_ok = False
-            break
-        i += 1
-        groups.append((nums, role))
+        if not shot_targets:
+            for t in reversed(core[:shot_i]):
+                if t.isdigit():
+                    n = int(t)
+                    if 1 <= n <= 10 and n not in shot_targets:
+                        shot_targets.append(n)
+                else:
+                    break
+            shot_targets.reverse()
+        if shot_targets:
+            return f"Стрелял в {_format_players_accusative(shot_targets)}."
+        return "Показан жест выстрела."
 
-    if grammar_ok and groups and i == len(clean):
-        parts: List[str] = ["если"] if with_if else []
-        for nums, role in groups:
-            formatted_nums = _format_ordinal_list(nums)
-            if not formatted_nums:
-                grammar_ok = False
-                break
-            parts.append(f"{formatted_nums} {_role_word(role, len(nums))}")
-        if grammar_ok:
-            phrase = " ".join(parts).strip()
-            if phrase:
-                return phrase
+    clauses, consumed = _parse_gesture_role_clauses(core)
+    if clauses and consumed == len(core):
+        rendered = [x for x in (_render_gesture_clause(nums, role) for nums, role in clauses) if x]
+        if rendered:
+            if with_if:
+                first = rendered[0]
+                if len(rendered) == 1:
+                    return f"Если {first}."
+                tail = rendered[1] if len(rendered) == 2 else "; ".join(rendered[1:])
+                return f"Если {first}, то {tail}."
+            if len(rendered) == 1:
+                return f"{rendered[0]}."
+            return f"{rendered[0]}; {', '.join(rendered[1:])}."
 
-    # Fallback: any valid sequence is a transcript.
-    words = [_gesture_token_to_text(t) for t in clean]
-    phrase = " ".join([w for w in words if w]).strip()
-    return phrase or None
+    nums_only = [int(t) for t in core if t.isdigit() and 1 <= int(t) <= 10]
+    if nums_only:
+        ordinals = _format_ordinal_list(nums_only)
+        if with_if:
+            return f"Если {ordinals}."
+        if len(nums_only) == 1:
+            return f"Показан номер {nums_only[0]}."
+        return f"Показаны номера: {ordinals}."
+
+    words: List[str] = []
+    for token in informative:
+        word = _gesture_token_to_text(token)
+        if word:
+            words.append(word)
+    phrase = " ".join(words).strip()
+    return f"{phrase}." if phrase else None
 
 
 async def _append_gesture_transcript_log(speaker_id: int, text: str) -> None:
@@ -1571,14 +1700,21 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
         else:
             asr_error = None
 
-        text_clean = (text or "").strip()
+        text_raw = (text or "").strip()
+        text_clean = _sanitize_speech_text(text_raw)
+        if text_raw and not text_clean and asr_error is None:
+            asr_error = "asr_placeholder_filtered"
 
         label = _speech_speaker_label(speaker_id, speaker_name)
-        line = _speech_line(label, text, kind="speech_text")
+        display_text = text_clean
+        if not display_text and speaker_id is not None and has_voice:
+            display_text = "речь не распознана"
+        line = _speech_line(label, display_text, kind="speech_text")
 
         entry: Optional[Dict[str, Any]] = None
         if body.add_to_logs:
             include_silence = os.getenv("SPEECH_LOGS_INCLUDE_SILENCE", "0").strip().lower() not in {"0", "false", "no"}
+            min_conf_without_text = float(os.getenv("SPEECH_LOGS_MIN_CONFIDENCE_WITHOUT_TEXT", "0.62"))
             if not include_silence and not has_voice and not text_clean:
                 return {
                     "ok": True,
@@ -1593,6 +1729,20 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
                     "skipped": True,
                     "reason": "vad_no_speech",
                 }
+            if not include_silence and not text_clean and (speaker_id is None or confidence < min_conf_without_text):
+                return {
+                    "ok": True,
+                    "speaker_id": speaker_id,
+                    "speaker_name": speaker_name,
+                    "speaker_label": label,
+                    "confidence": float(confidence),
+                    "text": "...",
+                    "line": _speech_line(label, "...", kind="speech_text"),
+                    "asr_error": asr_error,
+                    "entry": None,
+                    "skipped": True,
+                    "reason": "no_meaningful_text",
+                }
             async with _speech_logs_lock:
                 _speech_logs_counter += 1
                 entry = {
@@ -1602,7 +1752,7 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
                     "speaker_name": speaker_name,
                     "speaker_label": label,
                     "confidence": float(confidence),
-                    "text": (text or "").strip() or "...",
+                    "text": display_text or "...",
                     "line": line,
                     "kind": "speech_text",
                 }
@@ -1619,7 +1769,7 @@ async def voice_logs_recognize(body: _VoiceSpeechRecognizeIn):
             "speaker_name": speaker_name,
             "speaker_label": label,
             "confidence": float(confidence),
-            "text": (text or "").strip() or "...",
+            "text": display_text or "...",
             "line": line,
             "asr_error": asr_error,
             "entry": entry,
