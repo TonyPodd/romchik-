@@ -1860,8 +1860,18 @@ async def voice_test_identify(body: _VoiceTestIdentifyIn):
         predicted_id: Optional[int] = None
         predicted_name: Optional[str] = None
         confidence = 0.0
+        used_top_fallback = False
         if prediction:
             predicted_id, predicted_name, confidence = prediction
+        elif top_matches:
+            top = top_matches[0]
+            top_score = float(top.get("score", 0.0))
+            min_test_score = float(os.getenv("VOICE_TEST_MIN_SCORE", "0.52"))
+            if top_score >= min_test_score:
+                predicted_id = int(top.get("player_id")) if top.get("player_id") is not None else None
+                predicted_name = str(top.get("player_name") or "") or None
+                confidence = top_score
+                used_top_fallback = True
 
         return {
             "ok": True,
@@ -1872,6 +1882,7 @@ async def voice_test_identify(body: _VoiceTestIdentifyIn):
             "predicted_player_name": predicted_name,
             "confidence": float(confidence),
             "top_matches": top_matches,
+            "used_top_fallback": used_top_fallback,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}

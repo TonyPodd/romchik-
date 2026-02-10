@@ -20,10 +20,11 @@ type TestResult = {
   expectedName: string | null;
   predictedName: string | null;
   confidence: number;
+  topMatches: Array<{ name: string; score: number }>;
 };
 
 const REGISTER_DURATION_MS = 5200;
-const TEST_DURATION_MS = 3600;
+const TEST_DURATION_MS = 4800;
 const TARGET_SAMPLE_RATE = 16000;
 
 function buildPlayers(
@@ -253,6 +254,10 @@ export function VoiceRegistrationPage() {
           expectedName: response.expected_player_name || currentPlayer.name,
           predictedName: response.predicted_player_name || null,
           confidence: Number(response.confidence || 0),
+          topMatches: (response.top_matches || []).map((item) => ({
+            name: item.player_name || `Игрок ${item.player_id}`,
+            score: Number(item.score || 0),
+          })),
         });
       }
     } catch (err: any) {
@@ -431,6 +436,11 @@ export function VoiceRegistrationPage() {
                     Ожидался: {testResult.expectedName || '—'} · Определен: {testResult.predictedName || 'не распознан'}
                   </span>
                   <span>Уверенность: {(testResult.confidence * 100).toFixed(1)}%</span>
+                  {!testResult.correct && testResult.topMatches.length > 0 && (
+                    <span>
+                      Кандидаты: {testResult.topMatches.slice(0, 2).map((x) => `${x.name} ${(x.score * 100).toFixed(0)}%`).join(' · ')}
+                    </span>
+                  )}
                 </div>
               )}
 

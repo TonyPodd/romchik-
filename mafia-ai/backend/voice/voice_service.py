@@ -45,8 +45,8 @@ class VoiceService:
 
     def __init__(
         self,
-        similarity_threshold: float = 0.72,
-        min_margin: float = 0.015,
+        similarity_threshold: float = 0.66,
+        min_margin: float = 0.012,
         storage_path: str = "storage/voice_profiles.json",
     ) -> None:
         self.profiles: Dict[int, VoiceProfile] = {}
@@ -183,10 +183,15 @@ class VoiceService:
         self,
         audio: np.ndarray,
         sr: int = TARGET_SR,
-        energy_threshold: float = 0.012,
-        min_duration_sec: float = 0.45,
+        energy_threshold: float = 0.0075,
+        min_duration_sec: float = 0.28,
     ) -> bool:
         """Быстрая проверка, что в сэмпле есть речь."""
+        energy_threshold = float(os.getenv("VOICE_VAD_ENERGY_THRESHOLD", str(energy_threshold)))
+        min_duration_sec = float(os.getenv("VOICE_VAD_MIN_DURATION_SEC", str(min_duration_sec)))
+        voiced_ratio_threshold = float(os.getenv("VOICE_VAD_MIN_VOICED_RATIO", "0.035"))
+        min_peak = float(os.getenv("VOICE_VAD_MIN_PEAK", "0.03"))
+
         data = self._prepare_audio(audio, sr)
         if data.size < int(TARGET_SR * min_duration_sec):
             return False
@@ -194,7 +199,13 @@ class VoiceService:
         rms = float(np.sqrt(np.mean(data**2)))
         peak = float(np.max(np.abs(data)))
         voiced_ratio = float(np.mean(np.abs(data) > max(0.05, 0.12 * peak)))
-        return rms >= energy_threshold and voiced_ratio >= 0.05
+        if rms >= energy_threshold and voiced_ratio >= voiced_ratio_threshold:
+            return True
+
+        # Fallback for quiet mics / distant speaker: keep false positives low with peak gate.
+        if peak >= min_peak and rms >= (energy_threshold * 0.55):
+            return True
+        return False
 
     def _extract_features_mfcc(self, audio: np.ndarray, sr: int = TARGET_SR) -> np.ndarray:
         """Fallback-эмбеддинг: MFCC + deltas + spectral stats."""
@@ -260,7 +271,8 @@ class VoiceService:
             return np.zeros(FEATURE_DIM_RESEMBLYZER, dtype=np.float32)
         try:
             data = self._prepare_audio(audio, sr)
-            if data.size < int(TARGET_SR * 0.7):
+            min_sec = float(os.getenv("VOICE_RESEMBLYZER_MIN_SEC", "0.45"))
+            if data.size < int(TARGET_SR * min_sec):
                 return np.zeros(FEATURE_DIM_RESEMBLYZER, dtype=np.float32)
 
             with self._resemblyzer_lock:
@@ -353,7 +365,15 @@ class VoiceService:
         if not self.profiles or len(audio) == 0:
             return []
         if not self.detect_voice_activity(audio, sr):
-            return []
+            prepared = self._prepare_audio(audio, sr)
+            if prepared.size == 0:
+                return []
+            rms = float(np.sqrt(np.mean(prepared**2)))
+            peak = float(np.max(np.abs(prepared)))
+            fallback_rms = float(os.getenv("VOICE_IDENTIFY_FALLBACK_RMS", "0.005"))
+            fallback_peak = float(os.getenv("VOICE_IDENTIFY_FALLBACK_PEAK", "0.03"))
+            if rms < fallback_rms and peak < fallback_peak:
+                return []
 
         target_embedder = self._active_embedder_for_identification()
         query = self.extract_features(audio, sr, embedder=target_embedder)
@@ -393,7 +413,14 @@ class VoiceService:
 
         best = ranked[0]
         best_score = float(best["score"])
-        if best_score < self.similarity_threshold:
+        active_threshold = float(self.similarity_threshold)
+        if len(ranked) == 1:
+            active_threshold -= 0.08
+        if str(best.get("embedder") or "").strip().lower() == EMBEDDER_MFCC:
+            active_threshold = min(active_threshold, 0.58)
+        active_threshold = max(0.52, active_threshold)
+
+        if best_score < active_threshold:
             return None
 
         if len(ranked) > 1:
